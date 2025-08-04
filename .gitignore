@@ -1,0 +1,10 @@
+**/__pycache__
+**/build
+!.vscode/*
+**/.vs
+*.vcxproj
+*.vcxproj.filters
+**/src
+**/__vm
+*.sln
+**/obj
