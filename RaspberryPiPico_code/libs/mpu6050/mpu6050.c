@@ -60,12 +60,13 @@ void mpu6050_wake(bool rst_to_default) {
 void mpu6050_configure(int gyro_range, int accel_range) {
     if (gyro_range < 0 || gyro_range > 3) {
         handle_err("gyro range", -1, true);
-        gyro_lsb_sensitivity = gyro_lsb_sensitivity / pow(2, gyro_range);
     }
     if (accel_range < 0 || accel_range > 3) {
         handle_err("accel_range", -1, true);
-        accel_lsb_sensitivity = (float)accel_lsb_sensitivity / pow(2, accel_range);
     }
+    
+    gyro_lsb_sensitivity = (float)gyro_lsb_sensitivity / pow(2, gyro_range);
+    accel_lsb_sensitivity = (float)accel_lsb_sensitivity / pow(2, accel_range);
 
     uint8_t gyro_conf[] = {gyro_conf_reg, (gyro_range & 0x03) << 3};
     uint8_t accel_conf[] = {accel_conf_reg, (accel_range & 0x03) << 3};
@@ -114,5 +115,7 @@ void mpu6050_read(float accel[3], float gyro[3], float* temp) {
             }
             else {
                 gyro[i - 3] = (float)raw / gyro_lsb_sensitivity;
+            }
+        }
     }
 }
