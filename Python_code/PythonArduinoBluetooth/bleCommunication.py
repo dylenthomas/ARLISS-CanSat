@@ -53,6 +53,15 @@ Where,
     Y - desired y coordinates relative to current position in meters
 """
 
+current_collection_command = """
+To start current data collection send:
+    x.x_y.y
+
+Where-
+    x.x is a float between -1 and 1 specifying duty cycle and direction of the first motor
+    y.y is a float between -1 and 1 specifying duty cycle and direction of the second motor
+"""
+
 async def async_input(prompt):
     return await asyncio.get_event_loop().run_in_executor(None, input, prompt)
 
@@ -108,16 +117,17 @@ async def main():
 
             #print(mtr_cmd_structure)
             #print(breakout_commmand)
-            print(navigation_command)
+            #print(navigation_command)
+            #print(current_collection_command)
 
             while True:
-                cmd = await async_input("Enter command: ")
-                cmd += '\0'
+                #cmd = await async_input("Enter command: ")
+                #cmd += '\0'
 
-                print(f"\tSending Command to {BLEname}")
-                for c in cmd:
-                    c = c.encode('utf-8')
-                    await client.write_gatt_char(uuids[2], c, response=True)
+                #print(f"\tSending Command to {BLEname}")
+                #for c in cmd:
+                #    c = c.encode('utf-8')
+                #    await client.write_gatt_char(uuids[2], c, response=True)
 
                 while True:
                     notification = await notif_q.get()

@@ -4,7 +4,7 @@
 #define DEBUGGING false
 
 constexpr float data_samplerate = 10; // Hz
-constexpr int current_sensor_pin = A1;
+constexpr int current_sensor_pin = A0;
 constexpr float current_sensitivity = 66.0/1000.0; // V/A
 
 constexpr int mR_reverse_pin = 3;
@@ -77,9 +77,11 @@ bool valid_motor_command(String command, float* u_m1, float* u_m2) {
 
 float read_current() {
   float sensor_val = analogRead(current_sensor_pin);
-  float offset = 3.3 / 2.0; // voltage at zero amps
+  float sensor_voltage = (sensor_val * 3.3) / 1024.0;
+  float offset = 1.667; // measured value
+  float current = (sensor_voltage - offset) / current_sensitivity;
 
-  return (offset - (sensor_val * (3.3 / 1024.0))) / current_sensitivity;
+  return current;
 }
 
 void setup() {
@@ -122,6 +124,7 @@ void setup() {
 	}
 
 	log("<CONNECTED>");
+  log("<READY>");
 }
 
 
@@ -138,6 +141,8 @@ void loop() {
   float u_ml;
   int right_dir;
   int left_dir;
+  float current = 0.0;
+  int i;
 
   while (central.connected()) {
     if (commands.written()) {
@@ -153,14 +158,21 @@ void loop() {
 
     if (ble_terminated) {
       if (ble_string == "Start data collection") {
+        log("Starting data collection:");
         while (true) {
+          current += read_current();
+          i++;
           if (millis() - lastprint >= 1/data_samplerate * 1000) {
-            log(String(millis()) + "," + String(read_current()));
+            current = current / i;
+            log(String(millis()) + "," + String(current, 5));
             lastprint = millis();
+            i = 0;
+            current = 0.0;
           }
         }
       }
       else if (valid_motor_command(ble_string, &u_mr, &u_ml)) {
+        log("Changing right motor to: " + String(u_mr * 100) + "%, and left motor to: " + String(u_ml * 100) + "%");
         if (u_mr < 0.0) {
           right_dir = REVERSE;
         }
@@ -174,13 +186,16 @@ void loop() {
         else {
           left_dir = FORWARD;
         }
-
-        motorRight.setFreqAndDuty(right_dir, PWMFreq, abs(u_mr));
+        
         motorLeft.setFreqAndDuty(left_dir, PWMFreq, abs(u_ml));
+        motorRight.setFreqAndDuty(right_dir, PWMFreq, abs(u_mr));
       }
       else {
         log("Invalid command.");
       }
+
+      ble_terminated = false;
+      ble_string = "";
     }
   }
 }

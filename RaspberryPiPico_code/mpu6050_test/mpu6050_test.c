@@ -46,6 +46,7 @@ static void mpu6050_configure() {
 
     uint8_t gyro_conf[] = { 0x1B, 0x18 }; // set to +/- 2000 deg/s
     handle_err("gyro config write", i2c_write_blocking(i2c_dev, mpu_addr, gyro_conf, 2, false));
+    
 
     uint8_t accel_conf[] = { 0x1C, 0x18 }; // set to +/- 16 gs
     handle_err("accel config write", i2c_write_blocking(i2c_dev, mpu_addr, accel_conf, 2, false));
