@@ -66,10 +66,22 @@ GPSParser::statusData GPS_status = gps.getSTATUS();
 GPSParser::velnedData GPS_velned = gps.getVELNED();
 // ------------------------------------------------------------------------------------------------
 
-double lat_initial;
-double lon_initial;
+double ref_lat;
+double ref_lon;
+BLA::Matrix<3, 1> ref_pos;
+BLA::Matrix<3, 3> R;
+int a = 6378137;
+int b = 6356752;
+double e = (double)(1 - pow((b / a), 2));
+double N;
+
 float initial_heading;
 float gyro_heading;
+
+BLA::Matrix<2, 1> target_pos = {
+	50,  // meters east
+	50   // meters north
+}
 
 void predictFilter() {
     xhat = A * xhat;
@@ -95,6 +107,29 @@ z is a vector containing the gps heading and the calculated gyro heading
 		//float g2 = G(1);
 
 		//log("z: " + String(z1) + ", " + String(z2) + ", x: " + String(x) + ", P: " + String(p) + ", G: " + String(g1) + ", " + String(g2));
+}
+
+BLA::Matrix<3, 1> computeECEFpos(double lat, double lon, float height) {
+	BLA::Matrix<3, 1> pos;
+	lon = lon * DEG_TO_RAD;
+	lat = lat * DEG_TO_RAD;
+
+	N = (double)(a/sqrt(1 - pow(e, 2)*pow(sin(lat), 2)));
+	pos(0) = (N + height)*cos(lat)*cos(lon); // x
+	pos(1) = (N + height)*cos(lat)*sin(lon); // y
+	pos(2) = (N * (1 - pow(e, 2)) + height)*sin(lat); // z
+
+	return pos;
+}
+
+BLA::Matrix<3, 1> computeNEDpos(double lat, double lon, float height) {
+	BLA::Matrix<3, 1> pos;
+	BLA::Matrix<3, 1> ecef_pos = computeECEFpos(lat, lon, height);
+	lon = lon * DEG_TO_RAD;
+	lat = lat * DEG_TO_RAD;
+
+	pos = R * (ecef_pos - ref_pos);
+	return pos;
 }
 
 void findHeading() {
@@ -209,8 +244,6 @@ void setup() {
 		}
 	}
 	GPS_posllh = gps.getPOSLLH();
-	lat_initial = GPS_posllh.lat;
-	lon_initial = GPS_posllh.lon;
 
 	log("Initial GPS position found.");
 	delay(250);
@@ -220,6 +253,18 @@ void setup() {
 
   gyro_heading = initial_heading;
 	xhat = { initial_heading };
+
+	ref_lat = GPS_posllh.lat;
+	ref_lon = GPS_posllh.lon;
+	ref_pos = computeECEFpos(ref_lat, ref_lon, GPS_posllh.height); // double check height value to be in meters
+
+	ref_lat = ref_lat * DEG_TO_RAD;
+	ref_lon = ref_lon * DEG_TO_RAD;
+	R = {
+		-sin(ref_lat)*cos(ref_lon), -sin(ref_lat)*sin(ref_lon), cos(ref_lat),
+		-sin(ref_lon), cos(ref_lon), 0,
+		-cos(ref_lat)*cos(ref_lat), -cos(ref_lat)*sin(ref_lon), -sin(ref_lat),
+	}
 
 	log("<READY>");
 }
@@ -245,6 +290,9 @@ float de;
 bool wasPaused = false;
 
 int printdelay = 200;
+
+BLA::Matrix<3, 1> position;
+float target_heading = initial_heading; // go straight until we get target
 
 void loop() {
     central = BLE.central();
@@ -284,19 +332,27 @@ void loop() {
 				}
 
         if (gps.velnedChanged()) {
-            GPS_velned = gps.getVELNED();
+          GPS_velned = gps.getVELNED();
 
-            gps_heading = GPS_velned.heading * DEG_TO_RAD;
-            speed = GPS_velned.gSpeed;
+          gps_heading = GPS_velned.heading * DEG_TO_RAD;
+          speed = GPS_velned.gSpeed;
             
-            z = {gps_heading, gyro_heading};
-            updateFilter(z);
+          z = {gps_heading, gyro_heading};
+          updateFilter(z);
         }
+
+				if (gps.posllhChanged()) {
+					GPS_posllh = gps.getPOSLLH();
+					position = computeNEDpos(GPS_posllh.lat, GPS_posllh.lon, GPS_posllh.height);
+					float dx = target_pos(0) - position(0);
+					float dy = target_pos(1) - position(1);
+					target_heading = atan2(dy, dx);
+				}
 
 				float kalman_heading = xhat(0);
 				kalman_heading = wrapToPi(kalman_heading);
         //alpha = wrapToPi(initial_heading - kalman_heading);
-				alpha = initial_heading - kalman_heading;
+				alpha = target_heading - kalman_heading;
 
         dt_integral = max((micros() - last_time) * 1e-6, 1.0);
         de = wrapToPi(alpha - last_alpha);
