@@ -157,7 +157,7 @@ float wrapTo2Pi(float a) {
 	return a;
 }
 
-float wrapToPi(float a) {
+float shortestRotation(float a) {
 	if (a > PI) { a -= 2 * PI; }
 	else if (a < -PI) { a += 2 * PI; }
 	return a;
@@ -337,7 +337,7 @@ void loop() {
 			log("Heading to position: " + String(target_lat[0]) + "," + String(target_lat[1]) + "," + String(target_lat[2]) + " N, " + String(target_lon[0]) +"," + String(target_lon[1]) + "," + String(target_lon[2]) + " E.");
 		}
 		else {
-					log("Heading to position: " + String(target_lat[0], 6) + " N, " + String(target_lon[0], 6) +" E.");
+			log("Heading to position: " + String(target_lat[0], 6) + " N, " + String(target_lon[0], 6) +" E.");
 		}
 		delay(100);
 		log("Which is " + String(destination(0)) + " m N and " + String(destination(1)) + " m E");
@@ -397,14 +397,10 @@ void loop() {
 					target_heading = wrapTo2Pi(atan2(dy, dx));
 				}
 
-				float kalman_heading = xhat(0);
-				kalman_heading = wrapTo2Pi(kalman_heading);
-				//kalman_heading = wrapToPi(kalman_heading);
-				//alpha = wrapTo2Pi(target_heading - kalman_heading);
-				alpha = target_heading - kalman_heading;
+				float kalman_heading = wrapTo2Pi(xhat(0));
+				alpha = shortestRotation(target_heading - kalman_heading);
 
         dt_integral = max((micros() - last_time) * 1e-6, 1.0);
-				//de = wrapTo2Pi(alpha - last_alpha);
         de = alpha - last_alpha;
 
         last_alpha = alpha;
