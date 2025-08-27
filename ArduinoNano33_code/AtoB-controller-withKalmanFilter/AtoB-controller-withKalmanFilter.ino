@@ -20,13 +20,17 @@ Motor_Control motorLeft(mL_forward_pin, mL_reverse_pin);
 // ------------------------------------------------------------------------------------------------
 
 // Kalman filter matricies ------------------------------------------------------------------------
-BLA::Matrix<1, 2> G;
-BLA::Matrix<1, 1> xhat;
+BLA::Matrix<2, 2> G;
+BLA::Matrix<2, 1> xhat;
 BLA::Matrix<2, 1> z;
-BLA::Matrix<1, 1> P = { 0 };
-BLA::Matrix<2,1> C = { // tuneable constants
-  	1,
-    1
+BLA::Matrix<1, 1> u;
+BLA::Matrix<2, 2> P = {
+	0, 0,
+	0, 0,
+ };
+BLA::Matrix<2,2> C = { // tuneable constants
+  	1, 0,
+    0, 1,
 };
 double gps_variance = pow(0.5 * DEG_TO_RAD, 2);
 double gyro_variance = pow(0.07 * DEG_TO_RAD, 2);
@@ -34,16 +38,27 @@ BLA::Matrix<2,2> R = { // sensor variance
     gps_variance, 0,
     0, gyro_variance
 };
-BLA::Matrix<1, 1> Q = { 0.1 }; // covariance of the process noise (this can help account for drift)
-BLA::Matrix<1, 1> A = { 1 }; // state transition model
+BLA::Matrix<2, 2> Q = {
+	0.1, 0,
+	0, 0.01,
+ }; // covariance of the process noise (this can help account for drift)
+BLA::Matrix<2, 2> A = {
+	1, 0,
+	0, 1,
+}; // state transition model
+BLA::Matrix<2, 1> B;
+BLA::Matrix<2, 2> I = {
+	1, 0,
+	0, 1,
+};
 // ------------------------------------------------------------------------------------------------
 
 // Controller variables ---------------------------------------------------------------------------
 //const float Kp = /*1.0*/maxDutyCycle; // distance error gain
 const float Vforward = 0.95;
-const float KaP = 0.035; // heading proportional gain
-const float KaD = 0.01; // heading derivative gain
-const float KaI = 0.0; // heading integral gain
+const float KaP = 0.05;//0.035; // heading proportional gain
+const float KaD = 0.005;// heading derivative gain
+const float KaI = 0.0;// heading integral gain
 // ------------------------------------------------------------------------------------------------
 
 // BLE Initalization ------------------------------------------------------------------------------
@@ -81,23 +96,26 @@ float gyro_heading;
 /*
 FOLLOWING LIST SHOULD BE EITHER:
 		  { deg.decimal }
+					  or
+			 { deg, min }
 				  	or
 		{ deg, min, second }
 */
-double target_lon[] = {-84.40315};
-double target_lat[] = {33.77907};
+double target_lon[] = {33.0, 46.7432};
+double target_lat[] = {-84.0, 24.1859};
 
-void predictFilter() {
-    xhat = A * xhat;
+void predictFilter(float gyro, float dt) {
+		A(0, 1) = dt;
+		B(0, 0) = -dt;
+		u = { gyro };
+    xhat = A * xhat + B * u;
     P = A * P * ~A + Q;
 }
 
 void updateFilter(BLA::Matrix<2,1> z) {
 /*
-z is a vector containing the gps heading and the calculated gyro heading
+z is the vector {gps heading, gyro heading}
 */
-    BLA::Matrix<1, 1> I = { 1 };
-
     G = P * ~C * Inverse(C * P * ~C + R);
     xhat = xhat + G * (z - C * xhat);
     P = (I - G * C) * P;
@@ -121,11 +139,12 @@ BLA::Matrix<3, 1> computeNEDpos(double lat, double lon, float height) {
 	BLA::Matrix<3, 1> ecef_pos = computeECEFpos(lat, lon, height);
 
 	pos = NED_rotation * (ecef_pos - ref_pos);
+	//pos(0) = pos(0) * -1;
 	return pos;
 }
 
 void findHeading() {
-	const float acceptableHeadingAcc = 2.5;
+	const float acceptableHeadingAcc = 25;
 	const float findHeadingDC = 1.0;
 	float headingAcc = GPS_velned.cAcc;
 
@@ -141,7 +160,7 @@ void findHeading() {
 		}
 
 		headingAcc = GPS_velned.cAcc;
-		log("Heading Accuracy: " + String(headingAcc));
+		log("Heading Accuracy: " + String(headingAcc) + ", heading = " + String(GPS_velned.heading));
 	}
 	initial_heading = GPS_velned.heading * DEG_TO_RAD;
 	delay(500);
@@ -174,31 +193,6 @@ void log(const char* data) {
 
 static float constrainFloat(float x, float min, float max) {
 	return ((x) < (min) ? (min) : ((x) > (max) ? (max) : (x)));
-}
-
-double deg_minsec_to_dec(double* pos) {
-	return (double)(pos[0] + pos[1] / 60.0 + pos[2] / 3600.0);
-}
-
-BLA::Matrix<3, 1> get_destination(double* lat, double* lon, float height) {
-	double lon_dec;
-	double lat_dec;
-
-	if (sizeof(lon) / sizeof(lon[0]) == 1) {
-		lon_dec = lon[0];
-	}
-	else {
-		lon_dec = deg_minsec_to_dec(lon);
-	}
-
-	if (sizeof(lat) / sizeof(lat[0]) == 1) {
-		lat_dec = lat[0];
-	}
-	else {
-		lat_dec = deg_minsec_to_dec(lat);
-	}
-
-	return computeNEDpos(lat_dec, lon_dec, height);
 }
 
 void setup() {
@@ -272,13 +266,13 @@ void setup() {
 	findHeading();
 
   gyro_heading = initial_heading;
-	xhat = { initial_heading };
+	xhat = { initial_heading, 0.0 };
 
 	ref_lat = GPS_posllh.lat;
 	ref_lon = GPS_posllh.lon;
-	ref_pos = computeECEFpos(ref_lat, ref_lon, GPS_posllh.height); // double check height value to be in meters
-	log("Reference lat: " + String(ref_lat, 6) + ", reference lon: " + String(ref_lon, 6));
-	log("Starting ECEF pos: x = " + String(ref_pos(0)) + ", y = " + String(ref_pos(1)) + ", z = " + String(ref_pos(2)));
+	ref_pos = computeECEFpos(ref_lat, ref_lon, GPS_posllh.height);
+	log("Reference lon: " + String(ref_lon, 6) + ", reference lat: " + String(ref_lat, 6));
+	log("Starting ECEF pos: X = " + String(ref_pos(0)) + ", Y = " + String(ref_pos(1)) + ", Z = " + String(ref_pos(2)));
 
 	ref_lat = ref_lat * DEG_TO_RAD;
 	ref_lon = ref_lon * DEG_TO_RAD;
@@ -318,7 +312,7 @@ int printdelay = 200;
 BLA::Matrix<3, 1> position;
 float target_heading = initial_heading;
 
-BLA::Matrix<3, 1> destination = get_destination(target_lat, target_lon, GPS_posllh.height);
+BLA::Matrix<3, 1> destination;
 
 void loop() {
     central = BLE.central();
@@ -329,18 +323,26 @@ void loop() {
 		bool has_run = false;
 		float gx, gy, gz;
 
-		log("Current location: " + String(GPS_posllh.lat, 6) + " N, " + String(GPS_posllh.lon, 6) + " E.");
+		log("Current location: " + String(GPS_posllh.lon, 6) + " N, " + String(GPS_posllh.lat, 6) + " E.");
 		position = computeNEDpos(GPS_posllh.lat, GPS_posllh.lon, GPS_posllh.height);
-		log("Current local in m: x = " + String(position(0)) + ", y = " + String(position(1)));
 		delay(250);
-		if (sizeof(target_lat) / sizeof(target_lat[0]) == 3){
-			log("Heading to position: " + String(target_lat[0]) + "," + String(target_lat[1]) + "," + String(target_lat[2]) + " N, " + String(target_lon[0]) +"," + String(target_lon[1]) + "," + String(target_lon[2]) + " E.");
+		double lon_dec;
+		double lat_dec;
+
+		for (int i = 0; i < sizeof(target_lat)/sizeof(target_lat[0]); i ++) {
+			lat_dec += (double)(target_lat[i] * pow(60, -i));
 		}
-		else {
-			log("Heading to position: " + String(target_lat[0], 6) + " N, " + String(target_lon[0], 6) +" E.");
+		for (int i = 0; i < sizeof(target_lon)/sizeof(target_lon[0]); i ++) {
+			lon_dec += (double)(target_lon[i] * pow(60, -i));
 		}
+		destination = computeNEDpos(lat_dec, lon_dec, GPS_posllh.height);
+
+		log("Heading to position: " + String(lon_dec, 6) + " N, " + String(lat_dec, 6) +" E.");
+		log("ECEF Target: X = " + String(computeECEFpos(lat_dec, lon_dec, GPS_posllh.height)(0), 4) + "m, Y = " + String(computeECEFpos(lat_dec, lon_dec, GPS_posllh.height)(1), 4));
+		log("NED Target: N = " + String(computeNEDpos(lat_dec, lon_dec, GPS_posllh.height)(0), 4) + "m, E = " + String(computeNEDpos(lat_dec, lon_dec, GPS_posllh.height)(1), 4));
+		
 		delay(100);
-		log("Which is " + String(destination(0)) + " m N and " + String(destination(1)) + " m E");
+		log("Which is " + String(destination(0), 4) + " m N, " + String(destination(1), 4) + " m E, and " + String(destination(2), 4) + "m D.");
 		delay(250);
 
     while (central.connected()) {
@@ -354,19 +356,21 @@ void loop() {
             gps.addByte(Serial1.read());
         }
 
-        predictFilter();
-
         if (IMU.gyroscopeAvailable()) {
 					IMU.readGyroscope(gx, gy, gz);
 					double dt = (micros() - last_heading) * 1e-6;
 
-					if (!has_run) {
-						gyro_heading = initial_heading;
-						has_run = true;
-					}
+					//if (!has_run) {
+					//	gyro_heading = initial_heading;
+					//	has_run = true;
+					//}
 
-					gyro_heading += (gz * DEG_TO_RAD * dt);
-					gyro_heading = wrapTo2Pi(gyro_heading);
+					//gyro_heading += (gz * DEG_TO_RAD * dt);
+					//gyro_heading = wrapTo2Pi(gyro_heading);
+					gz = gz * DEG_TO_RAD;
+					predictFilter(gz, dt);
+
+					//z(1) = gz * DEG_TO_RAD;
 
 					last_heading = micros();
 				}
@@ -377,27 +381,40 @@ void loop() {
           gps_heading = GPS_velned.heading * DEG_TO_RAD;
           speed = GPS_velned.gSpeed;
             
-          z = {gps_heading, gyro_heading};
-          updateFilter(z);
+          //z = {gps_heading, gyro_heading};
+					z(0) = gps_heading;
+					if (speed > 0.5) { updateFilter(z); }
         }
+
+				float kalman_heading = wrapTo2Pi(xhat(0));
 
 				if (gps.posllhChanged()) {
 					GPS_posllh = gps.getPOSLLH();
 					position = computeNEDpos(GPS_posllh.lat, GPS_posllh.lon, GPS_posllh.height);
-					float dy = destination(0) - position(0);
-					float dx = destination(1) - position(1);
+					float dN = destination(0) - position(0);
+					float dE = destination(1) - position(1);
 
-					if (sqrt(pow(dy, 2) + pow(dx, 2)) <= stoppingDist) {
-						log("Reached destination");
+					//log("dN = " + String(dN, 4) + ", dE = " + String(dE, 4));
+
+					if (sqrt(pow(dE, 2) + pow(dN, 2)) <= stoppingDist) {
+						log("Reached destination: ");
+						log(String(GPS_posllh.lon, 6) + " N, and " + String(GPS_posllh.lat, 6) + " E.");
 						motorRight.pause();
 						motorLeft.pause();
 						while (1);
 					}
 
-					target_heading = wrapTo2Pi(atan2(dy, dx));
+					//double lat = GPS_posllh.lat * DEG_TO_RAD;
+					//double lon = GPS_posllh.lon * DEG_TO_RAD;
+					//double y = sin(lon_dec * DEG_TO_RAD - lon) * cos(lat_dec * DEG_TO_RAD);
+					//double x = cos(lat) * sin(lat_dec * DEG_TO_RAD) - sin(lat) * cos(lat) * cos(lon_dec * DEG_TO_RAD - lon);
+					//target_heading = wrapTo2Pi(atan2(y, x));
+					target_heading = wrapTo2Pi(atan2(dE, dN));
+					//log("Lat: " + String(lat, 6) + ", Lon: " + String(lon, 6));
+					//log("Lat des: " + String(lat_dec, 6) + ", Lon des: " + String(lon_dec, 6));
+					log("Targeting: " + String(target_heading * RAD_TO_DEG) + ", h1 = " + String(kalman_heading * RAD_TO_DEG) + ", h2 = " + String(GPS_velned.heading));
 				}
 
-				float kalman_heading = wrapTo2Pi(xhat(0));
 				alpha = shortestRotation(target_heading - kalman_heading);
 
         dt_integral = max((micros() - last_time) * 1e-6, 1.0);
@@ -416,8 +433,8 @@ void loop() {
         T = Tp + Td + Ti;
 				T = constrain(T, -0.5, 0.5);
 
-        u_l_internal = Vforward - T;
-        u_r_internal = Vforward + T;
+        u_l_internal = Vforward + T;
+        u_r_internal = Vforward - T;
 
         u_l = constrainFloat(abs(u_l_internal), minDutyCycle, maxDutyCycle);
         u_r = constrainFloat(abs(u_r_internal), minDutyCycle, maxDutyCycle);
@@ -458,7 +475,7 @@ void loop() {
 			if (millis() - lastprint > printdelay) {
 				//log("Control commands: u_r: " + String(u_r) + ", u_l: " + String(u_l) + ", rho: " + String(rho) + ", alpha: " + String(alpha) + ", F: " + String(F) + ", T: " + String(T));
 				//log("Td: " + String(Td) + ", a: " + String(alpha) + ", F: " + String(F) + ", T: " + String(T) + ", u_r: " + String(u_r_internal) + ", u_l: " + String(u_l_internal));
-				log("T: " + String(T) + ", speed: " + String(speed) + ", hding: " + String(kalman_heading) + ",  alpha: " + String(alpha));
+				//log("T: " + String(T) + ", speed: " + String(speed) + ", hding: " + String(kalman_heading) + ",  alpha: " + String(alpha));
 				//log("FilterHding: " + String(kalman_heading) + ",  a: " + String(alpha) + ", gy_hding: " + String(gyro_heading) + ", gps_hding: " + String(gps_heading));
 
 				lastprint = millis();
