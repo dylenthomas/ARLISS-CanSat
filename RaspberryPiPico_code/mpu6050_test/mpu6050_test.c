@@ -4,8 +4,8 @@
 #include "tusb.h"
 #include "hardware/i2c.h"
 
-#define i2c_dev_SDA 6
-#define i2c_dev_SCL 7
+#define i2c_dev_SDA 20
+#define i2c_dev_SCL 21
 #define i2c_dev i2c1
 #define mpu_addr 0x68
 #define accel_lsb_scaler 2048.0f

@@ -55,7 +55,7 @@ BLA::Matrix<2, 2> I = {
 
 // Controller variables ---------------------------------------------------------------------------
 //const float Kp = /*1.0*/maxDutyCycle; // distance error gain
-const float Vforward = 0.95;
+const float Vforward = 1.0;
 const float KaP = 0.05;//0.035; // heading proportional gain
 const float KaD = 0.005;// heading derivative gain
 const float KaI = 0.0;// heading integral gain
