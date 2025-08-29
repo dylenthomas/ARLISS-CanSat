@@ -5,10 +5,17 @@
 #include <string.h>
 
 #define NEO6M_UBXPARSER_H
+#define assumed_buf_len 100
+#define num_ids 3
+#define num_cls 1
 
 bool posllhChanged();
 bool statusChanged();
 bool velnedChanged();
+
+int get_pos();
+int get_is_valid();
+char get_checksum(int i);
 
 struct posllhData {
     /* message info */
@@ -75,23 +82,12 @@ struct posllhData getPOSLLH();
 struct statusData getSTATUS();
 struct velnedData getVELNED();
 
-void addByte(unsigned char c);
+int addByte(unsigned char c);
 
-uint16_t lenBytesToInt(unsigned char byte0, unsigned char byte1);
-void computeChecksum(unsigned short len, unsigned char* buffer, unsigned char* CK);
+int lenBytesToInt(unsigned char byte0, unsigned char byte1);
+void computeChecksum();
 void zeroValues();
-int parseBytes(
-        int pos,
-        const unsigned char c,
-        const unsigned char* ubx_header,
-        const char* cls_bytes,
-        const char* id_bytes,
-        int msg_idx,
-        uint16_t len,
-        unsigned char* buffer,
-        unsigned char* checksum,
-        int is_valid
-        );
-void storeValues(unsigned char* buffer, int msg_len, int msg_idx);
+void parseByte(const unsigned char c);
+void storeValues();
 
 #endif
