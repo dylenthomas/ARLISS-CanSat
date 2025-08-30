@@ -1,148 +1,44 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "hardware/i2c.h"
 #include "tusb.h"
 
+#include "Neo6M_UBXParser.h"
+#include "mpu6050.h"
+#include "navigation.h"
+#include "kalman_stuff.h"
+
+#ifndef PI
 #define PI 3.14159265359
-#define DEG_TO_RAD PI / 180.0
+#endif
 
-absolute_time_t time;
+#ifndef DEG_TO_RAD
+#define DEG_TO_RAD PI / 180.0f
+#endif
 
-// Kalman Filter Matricies ------------------------------------------------------------------------
-//  For indexing matricies they will be sequentially indexed from 0 to n going
-//      left to right, then top down
+#ifndef RAD_TO_DEG
+#define RAD_TO_DEG 180.0f / PI
+#endif
 
-float xhat[2] = {
-    0.0,
-    0.0
-};
-float z[2] = {
-    0.0,
-    0.0
-};
-float A[4] = {
-    1.0, 0.0,
-    0.0, 1.0
-};
-float A_transpose[4];
-float B[2] = {
-    0.0,
-    0.0
-};
+#define UART_ID uart1
+#define BAUD_RATE 9600
+#define UART_TX_PIN 4
+#define UART_RX_PIN 5
 
-float P[4] = {
-    0.0, 0.0,
-    0.0, 0.0
-};
-float P_temp[4];
-float C[4] = {
-    1.0, 0.0,
-    0.0, 1.0
-};
-float C_transpose[4];
-float Q[4] = {
-    0.1, 0.0,
-    0.0, 0.01
-};
-float G[4];
-float G_temp[4];
-const float gps_variance = (0.5 * DEG_TO_RAD) * (0.5 * DEG_TO_RAD);
-const float gyro_variance = (0.07 * DEG_TO_RAD) * (0.07 * DEG_TO_RAD);
-float R[4] = {
-    gps_variance, 0.0,
-    0.0, gyro_variance
-};
+#define i2c_dev i2c1
+#define i2c_dev_SDA 20
+#define i2c_dev_SCL 21
+#define mpu_addr 0x68
+#define imu_polling 100 // Hz
 
+struct posllhData posllh;
+struct velnedData velned;
+struct statusData status;
 
-// Linear Algebra Funcs ---------------------------------------------------------------------------
-void matmul2x2(float out[4], float m1[4], float m2[4]) {
-    // matrix multiplication to multiply two 2x2s
-    out[0] = m1[0] * m2[0] + m1[1] * m2[2];
-    out[1] = m1[0] * m2[1] + m1[1] * m2[3];
-    out[2] = m1[2] * m2[0] + m1[3] * m2[2];
-    out[3] = m1[2] * m2[1] + m1[3] * m2[3];
-}
-
-void matmul2x1(float out[2], float m1[4], float m2[2]) {
-    // matrix multiplication to multiply 2x2 x 2x1
-    out[0] = m1[0] * m2[0] + m1[1] * m2[1];
-    out[1] = m1[2] * m2[0] + m1[3] * m2[1];
-}
-
-void transpose2x2(float out[4], float matrix[4]) {
-    out[0] = matrix[0];
-    out[1] = matrix[2];
-    out[2] = matrix[1];
-    out[3] = matrix[3];
-}
-
-void add2x2(float m1[4], float m2[4]) {
-    // matrix addition between two 2x2s
-    for (int i = 0; i < 4; i++) {
-        m1[i] = m1[i] + m2[i];
-    }
-}
-
-void subtract2x2(float m1[4], float m2[4]) {
-    // matrix addition between two 2x2s
-    for (int i = 0; i < 4; i++) {
-        m1[i] = m1[i] - m2[i];
-    }
-}
-
-void invert2x2(float matrix[4]) {
-    float det = matrix[0] * matrix[3] - matrix[2] * matrix[1];
-    if (det == 0) { return; }
-    
-    matrix[0] = matrix[3] / det;
-    matrix[1] = -matrix[1] / det;
-    matrix[2] = -matrix[2] / det;
-    matrix[3] = matrix[0] / det;
-}
-
-// ------------------------------------------------------------------------------------------------
-
-void kalmanPredict(float u, float dt) {
-    // xhat = A * xhat + B * u
-    A[1] = dt;
-    B[0] = -dt;
-    matmul2x1(xhat, A, xhat);
-    xhat[0] = xhat[0] + B[0] * u; 
-
-    // P = A * P * A^T + Q
-    matmul2x2(P, A, P);
-    transpose2x2(A_transpose, A);
-    matmul(P, P, A_transpose);
-    add2x2(P, Q);
-}
-
-void kalmanUpdate(){
-    float I[4] = {
-        1.0, 0.0,
-        0.0, 1.0
-    };
-    
-    // G = P * C^T * ( C * P * C^T + R)^-1
-    transpose2x2(C_transpose, C);
-    matmul(G, P, C_transpose);
-    matmul(G_temp, C, P);
-    matmul(G_temp, G_temp, C_transpose);
-    add2x2(G_temp, R);
-    invert2x2(G_temp);
-    matmul(G, G, G_temp);
-
-    // xhat = xhat + G * (z - C * xhat)
-    matmul2x1(xhat, C, xhat);
-    z[0] = z[0] - xhat[0];
-    z[1] = z[1] - xhat[1];
-    matmul2x1(z, G, z);
-    xhat[0] = xhat[0] + z[0];
-    xhat[1] = xhat[1] + z[1];
-
-    // P = (I - G * C) * P
-    subtract2x2(I, G);
-    matmul2x2(P_temp, I, C);
-    matmul2x2(P, P_temp, P);
-}
+unsigned long last_imu_time;
+float accel_data[3];
+float gyro_data[3];
+float temp_data;
 
 // Controller Vars --------------------------------------------------------------------------------
 const float Vforward = 1.0;//0.95;
@@ -159,29 +55,33 @@ float u_r_internal;
 float u_l_internal;
 float target_heading;
 static uint64_t last_contr_call;
-float minDC = 0.4;
-float maxDC = 1.0;
+const float minDC = 0.4;
+const float maxDC = 1.0;
 float dt, de;
 // Controller Funcs -------------------------------------------------------------------------------
-float wrapTo2Pi(float a) {
-	if (a > 2 * PI) { a -= 2 * PI; }
-	else if (a < 0) { a += 2 * PI; }
-	return a;
-}
-
-float shortestRotation(float a) {
-	if (a > PI) { a -= 2 * PI; }
-	else if (a < -PI) { a += 2 * PI; }
-	return a;
+static float shortestRotation(float x) {
+	return((x) > (PI) ? (x - 2 * PI): (x) < (-PI) ? (x + 2 * PI): (x));
 }
 
 static float constrainFloat(float x, float min, float max) {
 	return ((x) < (min) ? (min) : ((x) > (max) ? (max) : (x)));
 }
 
+static float max(float a, float b) {
+    return((a) < (b) ? (b): (a));
+}
+
+static float absFloat(float x) {
+    return((x) < (0.0) ? (x * -1.0) : (x));
+}
+
+static float boundTo2Pi(float x) {
+    return((x) > (2 * PI) ? (x - 2 * PI): (x) < (0.0f) ? (x + 2 * PI): (x));
+}
+
 float calcT(float current_heading) {
-    dt = to_us_since_boot(time) - last_contr_call;
-    dt = max(dt * 1e-6, 1.0);
+    dt = absolute_time_diff_us(last_contr_call, get_absolute_time());
+    dt = (float)(dt * 1e-6);
    
     alpha = shortestRotation(target_heading - current_heading);
     de = alpha - last_alpha;
@@ -190,7 +90,7 @@ float calcT(float current_heading) {
     Td = constrainFloat(KaD * de / dt, -2.0, 2.0);
 
     last_alpha = alpha;
-    last_contr_call = to_us_since_boot(time);
+    last_contr_call = get_absolute_time();
 
     return constrainFloat(Tp + Td, -0.5, 0.5);
 }
@@ -200,27 +100,129 @@ void control(float current_heading) {
     u_l_internal = Vforward + T;
     u_r_internal = Vforward - T;
 
-    u_l = constrainFloat(abs(u_l_internal), minDC, maxDC);
-    u_r = constrainFloat(abs(u_r_internal), minDC, maxDC);
+    u_l = constrainFloat(absFloat(u_l_internal), minDC, maxDC);
+    u_r = constrainFloat(absFloat(u_r_internal), minDC, maxDC);
 
     // Motor Commands
 }
 // ------------------------------------------------------------------------------------------------
+/*
+bool repeating_imu_cb(__unused struct repeating_timer *t) {
+    float dt;
+    float u;
+
+    mpu6050_read(accel_data, gyro_data, &temp_data);
+
+    dt = (float)(absolute_time_diff_us(last_imu_time, get_absolute_time()) * 1e-6);
+    last_imu_time = get_absolute_time();
+    u = gyro_data[2];
+    kalmanPredict(u, dt);
+
+    return true;
+}
+*/
 
 int main()
 {
     stdio_init_all();
     while(!tud_cdc_connected());
+    sleep_ms(5000);
+
+    printf("Initializing uart...\n");
+    uart_init(UART_ID, BAUD_RATE);
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
+    /*
+    printf("Initializing mpu6050...\n");
+    mpu6050_setdevparams(i2c_dev, mpu_addr);
+    i2c_init(i2c_dev, 100 * 1000);
+    gpio_set_function(i2c_dev_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(i2c_dev_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(i2c_dev_SDA);
+    gpio_pull_up(i2c_dev_SCL);
+
+
+    printf("Waking mpu6050...\n");
+    mpu6050_wake(true);
+    mpu6050_ping();
+    printf("Configuring mpu6050...\n");
+    mpu6050_configure(3, 3);
+
+    struct repeating_timer timer;
+    add_repeating_timer_us((int)(1e6 / imu_polling), repeating_imu_cb, NULL, &timer);
+    */
+
+    while (!posllhChanged()) {
+        printf("[posllh: %d] Waiting for GPS fix..\n", posllhChanged());
+        while(uart_is_readable(UART_ID)) { addByte(uart_getc(UART_ID)); }
+    }
+    printf("GPS found!\n");
+
+    posllh = getPOSLLH();
+    set_ref_pos(posllh.lon, posllh.lat, posllh.height);
+
+    float target_lat[] = {33.782032};
+    float lat_dest = 0.0f;
+    float target_lon[] = {-84.407196};
+    float lon_dest = 0.0f;
+
+    float destination[3];
+
+    for (int i = 0; i < sizeof(target_lat)/sizeof(target_lat[0]); i ++) {
+		lat_dest += (float)(target_lat[i] * pow(60, -i));
+	}
+	for (int i = 0; i < sizeof(target_lon)/sizeof(target_lon[0]); i ++) {
+		lon_dest += (float)(target_lon[i] * pow(60, -i));
+	}
+
+    computeNEDpos(lon_dest, lat_dest, posllh.height, destination);
+
+    float current_pos[3];
+    float dN, dE;
+    float dest_heading;
+    float velN, velE, velD;
+    uint64_t last_velocity;
+    float dt_vel;
 
     // Main loop
     while(true) {
-        // Get gyro value
-            //kalmanPredict(gz, dt);
+        while(uart_is_readable(UART_ID)) {
+            addByte(uart_getc(UART_ID));
+        }
 
-        // Get gps heading
-            //z[0] = gps heading;
+        if (velnedChanged()) {
+            velned = getVELNED();
+
+            //z[0] = velned.heading;
             //kalmanUpdate();
+        }
 
-        control(wrapTo2Pi(xhat[0]));
+        if (posllhChanged()) {
+            posllh = getPOSLLH();
+            computeNEDpos(posllh.lon, posllh.lat, posllh.height, current_pos);
+
+            z_X[0] = current_pos[0];
+            z_Y[0] = current_pos[1];
+            kalmanUpdate_X(z_X);
+            kalmanUpdate_Y(z_Y);
+
+            dN = destination[0] - xhat_X[0];
+            dE = destination[1] - xhat_Y[0];
+            dest_heading = boundTo2Pi(atan2(dE, dN)) * RAD_TO_DEG;
+
+            printf("Destination: [%4.4f, %4.4f, %4.4f], Position: [%4.4f, %4.4f, %4.4f], heading to destination: %3.5f\n", destination[0], destination[1], destination[2], xhat_X[0], xhat_Y[0], current_pos[2], dest_heading);
+        }
+
+        if (velnedChanged()) {
+            velned = getVELNED();
+            dt_vel = (float)(absolute_time_diff_us(last_velocity, get_absolute_time()) * 1e-6);
+
+            kalmanPredict_X(velned.velN, dt_vel);
+            kalmanPredict_Y(velned.velE, dt_vel);
+            last_velocity = get_absolute_time();
+        }
+
+        //control(wrapTo2Pi(xhat[0]));
     }
 }

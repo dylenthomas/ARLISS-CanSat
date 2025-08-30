@@ -22,6 +22,7 @@ set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
 if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
+
 # ====================================================================================
 set(PICO_BOARD pico_w CACHE STRING "Board type")
 
@@ -37,16 +38,34 @@ pico_sdk_init()
 
 add_executable(base_controller base_controller.c )
 
+add_library(gps ../libs/Neo6M_UBXParser/Neo6M_UBXParser.c)
+target_include_directories(gps PUBLIC 
+        ${CMAKE_CURRENT_LIST_DIR}/../libs/Neo6M_UBXParser
+)
+
+add_library(mpu ../libs/mpu6050/mpu6050.c)
+target_include_directories(mpu PUBLIC 
+        ${CMAKE_CURRENT_LIST_DIR}/../libs/mpu6050
+)
+target_link_libraries(mpu
+        pico_stdlib
+        hardware_i2c
+)
+
+add_library(nav ../libs/navigation/navigation.c)
+target_include_directories(nav PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/../libs/navigation
+)
+target_link_libraries(nav
+        pico_stdlib
+)
+
 pico_set_program_name(base_controller "base_controller")
 pico_set_program_version(base_controller "0.1")
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(base_controller 0)
-pico_enable_stdio_usb(base_controller 0)
-
-# Add the standard library to the build
-target_link_libraries(base_controller
-        pico_stdlib)
+pico_enable_stdio_usb(base_controller 1)
 
 # Add the standard include files to the build
 target_include_directories(base_controller PRIVATE
@@ -54,9 +73,13 @@ target_include_directories(base_controller PRIVATE
 )
 
 # Add any user requested libraries
-target_link_libraries(base_controller 
-        
+target_link_libraries(base_controller
+        pico_stdlib
+        gps
+        mpu
+        nav
+        pico_cyw43_arch_none
+        hardware_i2c
         )
 
 pico_add_extra_outputs(base_controller)
-

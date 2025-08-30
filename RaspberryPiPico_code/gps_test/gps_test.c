@@ -42,29 +42,20 @@ int main()
         while(uart_is_readable(UART_ID)) {
             c = uart_getc(UART_ID);
             int len = addByte(c);
-
-            pos = get_pos();
-            is_valid = get_is_valid();
-
-            //printf("current char: %c, pos: %d, is valid: %d, msg_len: %d\n", c, pos, is_valid, len);
-            //printf("\tChecksum: {%c, %c}\n", get_checksum(0), get_checksum(1));
         }
 
         if (posllhChanged()) {
             posllh = getPOSLLH();
-            printf("posllh updated\n");
             printf("\tLon: %2.6f, Lat: %2.6f\n", posllh.lon, posllh.lat);
         }
 
         if (statusChanged()) {
             status = getSTATUS();
-            printf("status updated\n");
             printf("\tFix: %d\n", status.gpsFixOk);
         }
 
         if (velnedChanged()) {
             velned = getVELNED();
-            printf("velned updated\n");
             printf("\tHeading: %3.5f\n", velned.heading);
         }
     }

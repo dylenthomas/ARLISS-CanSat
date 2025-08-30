@@ -1,6 +1,11 @@
 #ifndef MPU6050_H
 
 #define MPU6050_H
+#include <stdbool.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdint.h>
+#include "hardware/i2c.h"
 
 static void handle_err(char process_name[], int rw_return_val);
 

@@ -1,6 +1,13 @@
 #ifndef NEO6M_UBXPARSER_H
 
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+
 #define NEO6M_UBXPARSER_H
+#define assumed_buf_len 100
+#define num_ids 3
+#define num_cls 1
 
 bool posllhChanged();
 bool statusChanged();
@@ -14,8 +21,8 @@ struct posllhData {
 
     /* payload */
     unsigned long iTOW;
-    double lon;
-    double lat;
+    float lat;
+    float lon;
     float height;
     float hMSL;
     float hACC;
@@ -30,7 +37,6 @@ struct statusData {
 
     /* payload */
     unsigned long iTOW;
-    unsigned int gpsFix;
     /* for gpsFix type the integer corresponds to fix type:
      * 0 - no fix
      * 1 - dead reckoning only
@@ -39,6 +45,7 @@ struct statusData {
      * 4 - GPS + dead reckoning
      * 5 - Time only fix
      */
+    unsigned int gpsFix;
      bool gpsFixOk;
      bool diffSoln;
      bool wknSet;
@@ -57,37 +64,26 @@ struct velnedData {
 
     /* payload */
     unsigned long iTOW;
-    double velN;
-    double velE;
-    double velD;
-    double speed;
-    double gSpeed;
+    float velN;
+    float velE;
+    float velD;
+    float speed;
+    float gSpeed;
     float heading;
     float sAcc;
     float cAcc;
 };
 
-posllhData getPOSLLH();
-statusData getSTATUS();
-velnedData getVELNED();
+struct posllhData getPOSLLH();
+struct statusData getSTATUS();
+struct velnedData getVELNED();
 
-void addByte(unsigned char c);
+int addByte(unsigned char c);
 
-uint16_t lenBytesToInt(unsigned char& byte0, unsigned char& byte1);
-void computeChecksum(unsigned short len, unsigned char* buffer, unsigned char* CK);
+int lenBytesToInt(unsigned char byte0, unsigned char byte1);
+void computeChecksum();
 void zeroValues();
-int parseBytes(
-        int& pos,
-        const unsigned char& c,
-        const unsigned char* ubx_header,
-        const char* cls_bytes,
-        const char* id_bytes,
-        int& msg_idx,
-        uint16_t& len,
-        unsigned char* buffer,
-        unsigned char* checksum,
-        int& is_valid
-        );
-void storeValues(unsigned char* buffer, int& msg_len, int& msg_idx);
+void parseByte(const unsigned char c);
+void storeValues();
 
 #endif

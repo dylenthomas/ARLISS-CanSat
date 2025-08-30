@@ -40,6 +40,12 @@
     "files.associations": {
         "*.sty": "latex",
         "*.cls": "latext",
-        "math.h": "c"
+        "math.h": "c",
+        "neo6m_ubxparser.h": "c",
+        "mpu6050.h": "c",
+        "navigation.h": "c",
+        "stdlib.h": "c",
+        "stdint.h": "c",
+        "i2c.h": "c"
     }
 }
