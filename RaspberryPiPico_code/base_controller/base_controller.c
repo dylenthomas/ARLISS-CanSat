@@ -7,6 +7,7 @@
 #include "mpu6050.h"
 #include "navigation.h"
 #include "kalman_stuff.h"
+#include "PWMmotorDriver.h"
 
 #ifndef PI
 #define PI 3.14159265359
@@ -31,19 +32,34 @@
 #define mpu_addr 0x68
 #define imu_polling 100 // Hz
 
+#define Vforward 1.0 //0.95
+#define KaP 0.05
+#define KaD 0.005
+#define stopping_dist 5 // m
+
+#define m1_IN1 15
+#define m1_IN2 13
+#define m2_IN1 6
+#define m2_IN2 7
+#define min_DC 0.4
+#define max_DC 1.0
+
+// Motor Pin Structs ------------------------------------------------------------------------------
+struct motor Motor1;
+struct motor Motor2;
+
+// GPS Data Structs -------------------------------------------------------------------------------
 struct posllhData posllh;
 struct velnedData velned;
 struct statusData status;
 
+// IMU Vars ---------------------------------------------------------------------------------------
 unsigned long last_imu_time;
 float accel_data[3];
 float gyro_data[3];
 float temp_data;
 
 // Controller Vars --------------------------------------------------------------------------------
-const float Vforward = 1.0;//0.95;
-const float KaP = 0.05; // heading proportional gain
-const float KaD = 0.005; // heading derivative gain
 float u_r;
 float u_l;
 float last_alpha;
@@ -55,9 +71,8 @@ float u_r_internal;
 float u_l_internal;
 float target_heading;
 static uint64_t last_contr_call;
-const float minDC = 0.4;
-const float maxDC = 1.0;
 float dt, de;
+
 // Controller Funcs -------------------------------------------------------------------------------
 static float shortestRotation(float x) {
 	return((x) > (PI) ? (x - 2 * PI): (x) < (-PI) ? (x + 2 * PI): (x));
@@ -100,13 +115,14 @@ void control(float current_heading) {
     u_l_internal = Vforward + T;
     u_r_internal = Vforward - T;
 
-    u_l = constrainFloat(absFloat(u_l_internal), minDC, maxDC);
-    u_r = constrainFloat(absFloat(u_r_internal), minDC, maxDC);
+    u_l = constrainFloat(absFloat(u_l_internal), min_DC, max_DC);
+    u_r = constrainFloat(absFloat(u_r_internal), min_DC, max_DC);
 
-    // Motor Commands
+    setMotorPWM(Motor1, u_l, (u_l_internal) > (0.0) ? (FORWARD): (REVERSE));
+    setMotorPWM(Motor2, u_r, (u_r_internal) > (0.0) ? (FORWARD): (REVERSE));
 }
 // ------------------------------------------------------------------------------------------------
-/*
+
 bool repeating_imu_cb(__unused struct repeating_timer *t) {
     float dt;
     float u;
@@ -116,24 +132,23 @@ bool repeating_imu_cb(__unused struct repeating_timer *t) {
     dt = (float)(absolute_time_diff_us(last_imu_time, get_absolute_time()) * 1e-6);
     last_imu_time = get_absolute_time();
     u = gyro_data[2];
-    kalmanPredict(u, dt);
+    kalmanPredict_heading(u, dt);
 
     return true;
 }
-*/
+
 
 int main()
 {
     stdio_init_all();
     while(!tud_cdc_connected());
-    sleep_ms(5000);
+    sleep_ms(2000);
 
     printf("Initializing uart...\n");
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-
-    /*
+/*
     printf("Initializing mpu6050...\n");
     mpu6050_setdevparams(i2c_dev, mpu_addr);
     i2c_init(i2c_dev, 100 * 1000);
@@ -141,7 +156,6 @@ int main()
     gpio_set_function(i2c_dev_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(i2c_dev_SDA);
     gpio_pull_up(i2c_dev_SCL);
-
 
     printf("Waking mpu6050...\n");
     mpu6050_wake(true);
@@ -151,13 +165,19 @@ int main()
 
     struct repeating_timer timer;
     add_repeating_timer_us((int)(1e6 / imu_polling), repeating_imu_cb, NULL, &timer);
-    */
+*/
+    printf("Configuring motor PWM...\n");
+    addPins(&Motor1, m1_IN1, m1_IN2);
+    addPins(&Motor2, m2_IN1, m2_IN2);
 
-    while (!posllhChanged()) {
-        printf("[posllh: %d] Waiting for GPS fix..\n", posllhChanged());
-        while(uart_is_readable(UART_ID)) { addByte(uart_getc(UART_ID)); }
+    while (!posllhChanged() || !status.gpsFixOk) {
+        while(uart_is_readable(UART_ID)) { 
+            addByte(uart_getc(UART_ID)); 
+        }
+        printf("[posllh: %d, fix: %d, fix type: %d] Waiting for GPS fix..\n", posllhChanged(), status.gpsFixOk, status.gpsFix);
+        if (statusChanged()) {status = getSTATUS();}
     }
-    printf("GPS found!\n");
+    printf("GPS Fix good!\n");
 
     posllh = getPOSLLH();
     set_ref_pos(posllh.lon, posllh.lat, posllh.height);
@@ -184,18 +204,12 @@ int main()
     float velN, velE, velD;
     uint64_t last_velocity;
     float dt_vel;
+    float est_heading;
 
     // Main loop
     while(true) {
         while(uart_is_readable(UART_ID)) {
             addByte(uart_getc(UART_ID));
-        }
-
-        if (velnedChanged()) {
-            velned = getVELNED();
-
-            //z[0] = velned.heading;
-            //kalmanUpdate();
         }
 
         if (posllhChanged()) {
@@ -204,25 +218,41 @@ int main()
 
             z_X[0] = current_pos[0];
             z_Y[0] = current_pos[1];
-            kalmanUpdate_X(z_X);
-            kalmanUpdate_Y(z_Y);
+            kalmanUpdate_X();
+            kalmanUpdate_Y();
 
             dN = destination[0] - xhat_X[0];
             dE = destination[1] - xhat_Y[0];
             dest_heading = boundTo2Pi(atan2(dE, dN)) * RAD_TO_DEG;
 
-            printf("Destination: [%4.4f, %4.4f, %4.4f], Position: [%4.4f, %4.4f, %4.4f], heading to destination: %3.5f\n", destination[0], destination[1], destination[2], xhat_X[0], xhat_Y[0], current_pos[2], dest_heading);
+            //printf("Destination: [%f, %f, %f], Position: [%f, %f, %f], heading to destination: %f, current heading: %f\n", destination[0], destination[1], destination[2], xhat_X[0], xhat_Y[0], current_pos[2], dest_heading, est_heading);
         }
 
         if (velnedChanged()) {
             velned = getVELNED();
             dt_vel = (float)(absolute_time_diff_us(last_velocity, get_absolute_time()) * 1e-6);
+            //printf("Delta Lat = %f\n", lat_dest - posllh.lat);
+            //printf("Meas X = %f, Est X = %f, Est velX bias = %f, velX = %f\n", current_pos[0], xhat_X[0], xhat_X[1], velned.velN);
 
             kalmanPredict_X(velned.velN, dt_vel);
             kalmanPredict_Y(velned.velE, dt_vel);
             last_velocity = get_absolute_time();
+
+            z_heading[0] = velned.heading;
+            kalmanUpdate_heading();
         }
 
-        //control(wrapTo2Pi(xhat[0]));
+        est_heading = boundTo2Pi(xhat_heading[0]);
+        control(est_heading);
+
+        //if (sqrt(dN * dN + dE * dE) < stopping_dist) {
+        //    pausePWM();
+        //    printf("Reached destination!\n");
+        //    while (true);
+        //}
+
+        while (!status.gpsFixOk) {
+            printf("Lost GPS fix!\n");
+        }
     }
 }

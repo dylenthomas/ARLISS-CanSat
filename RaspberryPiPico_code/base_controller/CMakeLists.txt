@@ -60,6 +60,20 @@ target_link_libraries(nav
         pico_stdlib
 )
 
+add_library(motor_pwm ../libs/PWMmotorDriver/PWMmotorDriver.c)
+target_include_directories(motor_pwm PUBLIC 
+        ${CMAKE_CURRENT_LIST_DIR}/../libs/PWMmotorDriver
+)
+target_link_libraries(motor_pwm
+        pico_stdlib
+        hardware_pwm
+)
+
+add_library(kalman_filter ../libs/kalman_stuff/kalman_stuff.c)
+target_include_directories(kalman_filter PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/../libs/kalman_stuff
+)
+
 pico_set_program_name(base_controller "base_controller")
 pico_set_program_version(base_controller "0.1")
 
@@ -78,8 +92,11 @@ target_link_libraries(base_controller
         gps
         mpu
         nav
+        motor_pwm
+        kalman_filter
         pico_cyw43_arch_none
         hardware_i2c
+        hardware_pwm
         )
 
 pico_add_extra_outputs(base_controller)
