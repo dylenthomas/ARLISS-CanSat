@@ -26,7 +26,7 @@
 #define UART_TX_PIN 4
 #define UART_RX_PIN 5
 
-#define i2c_dev i2c1
+#define i2c_dev i2c0
 #define i2c_dev_SDA 20
 #define i2c_dev_SCL 21
 #define mpu_addr 0x68
@@ -44,6 +44,14 @@
 #define min_DC 0.4
 #define max_DC 1.0
 
+#define servo_pin 0
+
+#define fall_time_threshold 3
+
+static uint servo_slice;
+static uint servo_chan;
+const int servo_ticks = 21;
+
 // Motor Pin Structs ------------------------------------------------------------------------------
 struct motor Motor1;
 struct motor Motor2;
@@ -58,6 +66,12 @@ unsigned long last_imu_time;
 float accel_data[3];
 float gyro_data[3];
 float temp_data;
+
+// Fall tracking Vars ---------------------------------------------------------------------------------------
+float velD;
+float altitude, last_altitude, calc_velD;
+uint64_t last_alt_time;
+uint64_t started_falling;
 
 // Controller Vars --------------------------------------------------------------------------------
 float u_r;
@@ -137,6 +151,58 @@ bool repeating_imu_cb(__unused struct repeating_timer *t) {
     return true;
 }
 
+void config_servo_pin(uint pin) {
+    gpio_set_function(pin, GPIO_FUNC_PWM);
+    servo_slice = pwm_gpio_to_slice_num(pin);
+    pwm_set_wrap(servo_slice, 20000 - 1);
+    pwm_set_clkdiv(servo_slice, 125);
+    pwm_set_enabled(servo_slice, true);
+
+    if (pin % 2 == 0) {
+        servo_chan = PWM_CHAN_A;
+    }
+    else {
+        servo_chan = PWM_CHAN_B;
+    }
+}
+
+void set_servo(int deg) {
+    int flip_val = (int)(800 + 7.78 * deg);
+    pwm_set_chan_level(servo_slice, servo_chan, flip_val);
+}
+
+bool onGround() {
+    if (velnedChanged() && posllhChanged()) {
+        velned = getVELNED();
+        velD = velned.velD;
+
+        posllh = getPOSLLH();
+        altitude = posllh.hMSL;
+
+        float dt = (float)(absolute_time_diff_us(last_alt_time, get_absolute_time()) * 1e-6);
+        dt = max(dt, 1e-6); // prevent divide by zero
+        calc_velD = (float)((altitude - last_altitude) / (dt));
+            
+        last_altitude = altitude;
+        last_alt_time = get_absolute_time();
+    }
+
+    if (round(velD) > 0.0 && round(calc_velD) < 0.0 && started_falling == 0) {
+        started_falling = get_absolute_time();
+    }
+    else {
+        started_falling = 0;
+    }
+
+    uint64_t time_falling = absolute_time_diff_us(started_falling, get_absolute_time());
+
+    if (started_falling != 0 && time_falling >= fall_time_threshold * 1e6) {
+        return true;
+    }
+    else {
+        return false;
+    }
+}
 
 int main()
 {
@@ -148,7 +214,7 @@ int main()
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-/*
+
     printf("Initializing mpu6050...\n");
     mpu6050_setdevparams(i2c_dev, mpu_addr);
     i2c_init(i2c_dev, 100 * 1000);
@@ -165,10 +231,14 @@ int main()
 
     struct repeating_timer timer;
     add_repeating_timer_us((int)(1e6 / imu_polling), repeating_imu_cb, NULL, &timer);
-*/
+
     printf("Configuring motor PWM...\n");
     addPins(&Motor1, m1_IN1, m1_IN2);
     addPins(&Motor2, m2_IN1, m2_IN2);
+
+    printf("Everything is configured!\n");
+
+    sleep_ms(5000);
 
     while (!posllhChanged() || !status.gpsFixOk) {
         while(uart_is_readable(UART_ID)) { 
@@ -178,6 +248,19 @@ int main()
         if (statusChanged()) {status = getSTATUS();}
     }
     printf("GPS Fix good!\n");
+
+    last_alt_time = get_absolute_time();
+    while (!onGround()) {
+        while (uart_is_readable(UART_ID)) {
+            addByte(uart_getc(UART_ID));
+        }
+    }
+
+    for (int i = 0; i < servo_ticks; i++) {
+        int deg = 10 * i;
+        set_servo(180 - deg);
+        sleep_ms(500);
+    }
 
     posllh = getPOSLLH();
     set_ref_pos(posllh.lon, posllh.lat, posllh.height);
