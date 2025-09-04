@@ -34,9 +34,12 @@ project(base_controller C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-# Add executable. Default name is the project name, version 0.1
-
-add_executable(base_controller base_controller.c )
+# SD + FatFs repo (cloned alongside this file)
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/fatfslib/FatFs_SPI)
+add_executable(base_controller
+  base_controller.c
+  hw_config.c
+)
 
 add_library(gps ../libs/Neo6M_UBXParser/Neo6M_UBXParser.c)
 target_include_directories(gps PUBLIC 
@@ -84,6 +87,8 @@ pico_enable_stdio_usb(base_controller 1)
 # Add the standard include files to the build
 target_include_directories(base_controller PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/fatfslib/FatFs_SPI
+        ${CMAKE_CURRENT_LIST_DIR}/fatfslib/FatFs_SPI/ff14a/source
 )
 
 # Add any user requested libraries
@@ -97,6 +102,7 @@ target_link_libraries(base_controller
         pico_cyw43_arch_none
         hardware_i2c
         hardware_pwm
+        FatFs_SPI
         )
 
 pico_add_extra_outputs(base_controller)

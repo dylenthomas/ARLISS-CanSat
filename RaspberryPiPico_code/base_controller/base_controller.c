@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 #include "tusb.h"
@@ -8,6 +9,36 @@
 #include "navigation.h"
 #include "kalman_stuff.h"
 #include "PWMmotorDriver.h"
+#include "ff.h"
+#include "sd_card.h"
+
+FATFS fs;
+FIL file;
+
+// TARGET INFORMATION -------------------------------------------------------------------------------------------
+
+struct TARGET {
+    float deg;
+    float arcmin;
+    float arcsec;
+
+    float deg_dec;
+};
+struct TARGET target_lat; // NORTH/SOUTH
+struct TARGET target_lon;  // EAST/WEST
+
+void setTarget() {
+    target_lat.deg = 33.782032;
+    target_lat.arcmin = 0.0;
+    target_lat.arcsec = 0.0;
+    target_lat.deg_dec = target_lat.deg + (float)(target_lat.arcmin * 1/60) + (float)(target_lat.arcsec * 1/3600);
+
+    target_lon.deg = -84.407196;
+    target_lon.arcmin = 0.0;
+    target_lon.arcsec = 0.0;
+    target_lon.deg_dec = target_lon.deg + (float)(target_lon.arcmin * 1/60) + (float)(target_lon.arcsec * 1/3600);
+}
+// --------------------------------------------------------------------------------------------------------------
 
 #ifndef PI
 #define PI 3.14159265359
@@ -48,6 +79,14 @@
 
 #define fall_time_threshold 3
 
+#define control_log_rate 2 // Hz
+
+#define accel_fall_thres 0.5
+#define fall_time_thres_us 5 * 1e5 // us
+#define acc_landed_a 0.9
+#define acc_landed_b 1.1
+#define landed_time_thres_us 5 * 1e6 // us
+
 static uint servo_slice;
 static uint servo_chan;
 const int servo_ticks = 21;
@@ -68,10 +107,8 @@ float gyro_data[3];
 float temp_data;
 
 // Fall tracking Vars ---------------------------------------------------------------------------------------
-float velD;
-float altitude, last_altitude, calc_velD;
-uint64_t last_alt_time;
-uint64_t started_falling;
+uint64_t started_falling, falling_ts_candidate, landed_ts_candidate;
+bool is_falling;
 
 // Controller Vars --------------------------------------------------------------------------------
 float u_r;
@@ -84,8 +121,12 @@ float T;
 float u_r_internal;
 float u_l_internal;
 float target_heading;
-static uint64_t last_contr_call;
-float dt, de;
+uint64_t last_contr_call;
+float est_heading;
+uint64_t last_log;
+bool was_paused;
+
+const char *hdr = "TOW,control_dt,heading,lat,lon,alt\r\n";
 
 // Controller Funcs -------------------------------------------------------------------------------
 static float shortestRotation(float x) {
@@ -109,6 +150,8 @@ static float boundTo2Pi(float x) {
 }
 
 float calcT(float current_heading) {
+    float dt, de;
+
     dt = absolute_time_diff_us(last_contr_call, get_absolute_time());
     dt = (float)(dt * 1e-6);
    
@@ -138,17 +181,19 @@ void control(float current_heading) {
 // ------------------------------------------------------------------------------------------------
 
 bool repeating_imu_cb(__unused struct repeating_timer *t) {
-    float dt;
-    float u;
-
     mpu6050_read(accel_data, gyro_data, &temp_data);
-
-    dt = (float)(absolute_time_diff_us(last_imu_time, get_absolute_time()) * 1e-6);
     last_imu_time = get_absolute_time();
-    u = gyro_data[2];
-    kalmanPredict_heading(u, dt);
 
     return true;
+}
+
+static void log_line(FIL *f, unsigned long TOW, float dt_log, float heading, float lat, float lon, float alt) {
+    char line[96];
+    int len = snprintf(line, sizeof line, "%lu,%.2f,%.2f,%3.7f,%3.7f,%.2f\r\n",
+                       (unsigned long)TOW, dt_log, heading, lat, lon, alt);
+    UINT bw;
+    f_write(f, line, (UINT)len, &bw);
+    f_sync(f);
 }
 
 void config_servo_pin(uint pin) {
@@ -171,44 +216,60 @@ void set_servo(int deg) {
     pwm_set_chan_level(servo_slice, servo_chan, flip_val);
 }
 
-bool onGround() {
-    if (velnedChanged() && posllhChanged()) {
-        velned = getVELNED();
-        velD = velned.velD;
+void release_servo() {
+    int tick_speed = 500;
 
-        posllh = getPOSLLH();
-        altitude = posllh.hMSL;
-
-        float dt = (float)(absolute_time_diff_us(last_alt_time, get_absolute_time()) * 1e-6);
-        dt = max(dt, 1e-6); // prevent divide by zero
-        calc_velD = (float)((altitude - last_altitude) / (dt));
-            
-        last_altitude = altitude;
-        last_alt_time = get_absolute_time();
+    for (int i = 0; i < servo_ticks; i++) {
+        int deg = 10 * i;
+        set_servo(180 - deg);
+        sleep_ms(tick_speed);
     }
+}
 
-    if (round(velD) > 0.0 && round(calc_velD) < 0.0 && started_falling == 0) {
-        started_falling = get_absolute_time();
+bool landed() {
+    float amag = sqrt(accel_data[0] * accel_data[0] + accel_data[1] * accel_data[1] + accel_data[2] * accel_data[2]);
+    
+    bool accel_freefall = amag < accel_fall_thres;
+    bool accel_landed = acc_landed_a > amag && amag < acc_landed_b;
+
+    if (!is_falling){
+        if (accel_freefall) {
+            if (falling_ts_candidate == 0) falling_ts_candidate = get_absolute_time();
+            else if (absolute_time_diff_us(falling_ts_candidate, get_absolute_time()) > fall_time_thres_us) {
+                is_falling = true;
+            }
+        }
+        else {
+            falling_ts_candidate = 0;
+        }
+        
     }
     else {
-        started_falling = 0;
+        if (accel_landed) {
+            if (landed_ts_candidate == 0) landed_ts_candidate = get_absolute_time();
+            else if (absolute_time_diff_us(landed_ts_candidate, get_absolute_time()) > landed_time_thres_us) {
+                return true;
+            }
+        }
+        else {
+            landed_ts_candidate = 0;
+        }
     }
 
-    uint64_t time_falling = absolute_time_diff_us(started_falling, get_absolute_time());
-
-    if (started_falling != 0 && time_falling >= fall_time_threshold * 1e6) {
-        return true;
-    }
-    else {
-        return false;
-    }
+    return false;
 }
 
 int main()
 {
+// PRE LAUNCH CODE ----------------------------------------------------------------------------------------------
     stdio_init_all();
-    while(!tud_cdc_connected());
+    while(!tud_cdc_connected()) tight_loop_contents();
     sleep_ms(2000);
+
+    printf("Hello! Starting configuration and pre flight checks!\n");
+
+    setTarget();
+    printf("Target location set!\n");
 
     printf("Initializing uart...\n");
     uart_init(UART_ID, BAUD_RATE);
@@ -229,14 +290,36 @@ int main()
     printf("Configuring mpu6050...\n");
     mpu6050_configure(3, 3);
 
-    struct repeating_timer timer;
-    add_repeating_timer_us((int)(1e6 / imu_polling), repeating_imu_cb, NULL, &timer);
+    printf("Starting IMU Callback timer...\n");
+    struct repeating_timer imu_timer;
+    add_repeating_timer_us((int)(1e6 / imu_polling), repeating_imu_cb, NULL, &imu_timer);
 
     printf("Configuring motor PWM...\n");
     addPins(&Motor1, m1_IN1, m1_IN2);
     addPins(&Motor2, m2_IN1, m2_IN2);
 
+    printf("Mounting SD Card...\n");
+    if (!sd_init_driver()) { while (1) tight_loop_contents(); }
+    if (f_mount(&fs, "0:", 1) != FR_OK) { while (1) tight_loop_contents(); }
+
+    printf("Opening log file...\n");
+    FRESULT fr = f_open(&file, "CtrlLog.csv", FA_WRITE | FA_OPEN_ALWAYS);
+    if (fr != FR_OK) { while (1) tight_loop_contents(); }
+
+    if (f_size(&file) == 0) {
+        UINT bw; 
+        f_write(&file, hdr, (UINT)strlen(hdr), &bw);
+        f_sync(&file);
+    }
+    else {
+        printf("Could not create header of log file!\n");
+        printf("File seems to have data in it already!\n");
+        while (1) tight_loop_contents();
+    }
+    printf("Control log created.\n");
+
     printf("Everything is configured!\n");
+    printf("Checking GPS status now...\n");
 
     sleep_ms(5000);
 
@@ -249,37 +332,21 @@ int main()
     }
     printf("GPS Fix good!\n");
 
-    last_alt_time = get_absolute_time();
-    while (!onGround()) {
-        while (uart_is_readable(UART_ID)) {
-            addByte(uart_getc(UART_ID));
-        }
-    }
-
-    for (int i = 0; i < servo_ticks; i++) {
-        int deg = 10 * i;
-        set_servo(180 - deg);
-        sleep_ms(500);
-    }
+// END PRE LAUNCH -----------------------------------------------------------------------------------------------
+    printf("I am ready for launch!\n");
+// LOAD INTO ROCKET ---------------------------------------------------------------------------------------------
+    falling_ts_candidate = 0;
+    landed_ts_candidate = 0;
+    //while (!landed()) tight_loop_contents();
+    //release_servo();
 
     posllh = getPOSLLH();
     set_ref_pos(posllh.lon, posllh.lat, posllh.height);
 
-    float target_lat[] = {33.782032};
-    float lat_dest = 0.0f;
-    float target_lon[] = {-84.407196};
-    float lon_dest = 0.0f;
+    log_line(&file, posllh.iTOW, 0.0, -1.0, posllh.lat, posllh.lon, posllh.hMSL);
 
     float destination[3];
-
-    for (int i = 0; i < sizeof(target_lat)/sizeof(target_lat[0]); i ++) {
-		lat_dest += (float)(target_lat[i] * pow(60, -i));
-	}
-	for (int i = 0; i < sizeof(target_lon)/sizeof(target_lon[0]); i ++) {
-		lon_dest += (float)(target_lon[i] * pow(60, -i));
-	}
-
-    computeNEDpos(lon_dest, lat_dest, posllh.height, destination);
+    computeNEDpos(target_lon.deg_dec, target_lat.deg_dec, posllh.height, destination);
 
     float current_pos[3];
     float dN, dE;
@@ -287,10 +354,14 @@ int main()
     float velN, velE, velD;
     uint64_t last_velocity;
     float dt_vel;
-    float est_heading;
 
-    // Main loop
+// NAVIGATION TO TARGET -----------------------------------------------------------------------------------------
     while(true) {
+        if (was_paused) {
+            unpausePWM();
+            was_paused = false;
+        }
+
         while(uart_is_readable(UART_ID)) {
             addByte(uart_getc(UART_ID));
         }
@@ -304,11 +375,24 @@ int main()
             kalmanUpdate_X();
             kalmanUpdate_Y();
 
+            float lat1 = posllh.lat * DEG_TO_RAD;
+            float lon1 = posllh.lon * DEG_TO_RAD;
+            float lat2 = target_lat.deg_dec * DEG_TO_RAD;
+            float lon2 = target_lon.deg_dec * DEG_TO_RAD;
+            float y = sin(lon2 - lon1) * cos(lat2);
+            float x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1);
+            dest_heading = boundTo2Pi(atan2(y, x));
+
             dN = destination[0] - xhat_X[0];
             dE = destination[1] - xhat_Y[0];
-            dest_heading = boundTo2Pi(atan2(dE, dN)) * RAD_TO_DEG;
+            //dest_heading = boundTo2Pi(atan2(dE, dN)) * RAD_TO_DEG;
 
             //printf("Destination: [%f, %f, %f], Position: [%f, %f, %f], heading to destination: %f, current heading: %f\n", destination[0], destination[1], destination[2], xhat_X[0], xhat_Y[0], current_pos[2], dest_heading, est_heading);
+        }
+
+        if (absolute_time_diff_us(last_imu_time, get_absolute_time()) > (int)(1e6/imu_polling)) {           
+            float dt = (float)(absolute_time_diff_us(last_imu_time, get_absolute_time()) * 1e-6);
+            kalmanPredict_heading(gyro_data[2], dt);
         }
 
         if (velnedChanged()) {
@@ -331,11 +415,34 @@ int main()
         //if (sqrt(dN * dN + dE * dE) < stopping_dist) {
         //    pausePWM();
         //    printf("Reached destination!\n");
-        //    while (true);
+        //    log_line(&file, posllh.iTOW, 0.0, -1.0, posllh.lat, posllh.lon, posllh.hMSL);
+        //    f_close(&file);
+        //    f_mount(NULL, "0:", 0);
+        //    while (true) tight_loop_contents();
         //}
 
+        if (absolute_time_diff_us(last_log, get_absolute_time()) > (int)(1e6/control_log_rate)) {           
+            unsigned long timestamp = posllh.iTOW;
+            float log_dt = (float)(absolute_time_diff_us(last_log, get_absolute_time()) * 1e-6);
+            float heading = est_heading * RAD_TO_DEG;
+
+            // wait until the first line of data is written to start logging
+            if (f_size(&file) > strlen(hdr)) {
+                log_line(&file, timestamp, log_dt, heading, posllh.lat, posllh.lon, posllh.hMSL);
+            }
+
+            last_log = get_absolute_time();
+        }
+
         while (!status.gpsFixOk) {
-            printf("Lost GPS fix!\n");
+            while(uart_is_readable(UART_ID)) {
+                addByte(uart_getc(UART_ID));
+            }
+
+            if (!was_paused) {
+                pausePWM();
+                was_paused = true;
+            }
         }
     }
 }

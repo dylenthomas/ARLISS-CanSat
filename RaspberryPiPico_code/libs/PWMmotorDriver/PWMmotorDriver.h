@@ -1,20 +1,24 @@
 #ifndef PWMMOTORDRIVER_H
 
 #define PWMMOTORDRIVER_H
+#include <hardware/pwm.h>
+#include <pico/stdlib.h>
+#include <stdbool.h>
 
 #define FORWARD true
-#define REVERSE false 
+#define REVERSE false
 
-static bool sliceConfigured(uint slice_num);
+struct motor {
+    int IN1;
+    int IN2;
+};
+
 static uint getChannel(uint pwm_pin);
+static void configPWMpin(uint pwm_pin);
 
-void configPWMpin(uint pwm_pin);
-void configDirPin(uint direction_pin);
-
-void setPWM_DC(uint pwm_pin, float duty_cycle);
-void setMotor_dir(uint direction_pin, bool direction);
-
-void pausePWM(uint* pwm_pins);
-void unpausePWM(uint* pwm_pins);
+void addPins(struct motor* motor_pins, uint IN1, uint IN2);
+void setMotorPWM(struct motor motor_pins, float duty_cycle, bool direction);
+void pausePWM();
+void unpausePWM();
 
 #endif

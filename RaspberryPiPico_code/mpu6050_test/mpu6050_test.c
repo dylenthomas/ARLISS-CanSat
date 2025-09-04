@@ -7,11 +7,12 @@
 #define i2c_dev_SDA 20
 #define i2c_dev_SCL 21
 #define i2c_dev i2c1
-#define mpu_addr 0x68
+#define mpu_addr 0x69
 #define accel_lsb_scaler 2048.0f
 #define gyro_lsb_scaler 16.4f
 
 void handle_err(char reg_type[], int read_write_status) {
+    printf("Status - %d\n", read_write_status);
     if (read_write_status < 0) {
         printf("Error with "); printf(reg_type); printf("%d", read_write_status); 
         while (true);
@@ -26,16 +27,16 @@ static void mpu6050_ping() {
     handle_err("ping write", i2c_write_blocking(i2c_dev, mpu_addr, &who_am_i, 1, true));
     handle_err("ping read", i2c_read_blocking(i2c_dev, mpu_addr, &buf, 1, false));
 
-    if (mpu_addr == buf) {
-        printf("The specified address and returned id are equal!");
-    }
-    else {
-        printf("The specified address and the returned id are not equal: \n\tSpecified address: %d, Returned address: %d\n", mpu_addr, buf);
-        while(true);
+    if (buf == 0x68) {
+        printf("WHO_AM_I returned 0x68 (good)\n");
+    } else {
+        printf("Unexpected WHO_AM_I value: 0x%02X\n", buf);
+        while (true);
     }
 } 
 
 static void mpu6050_wake() {
+    printf("Waking MPU\n");
     uint8_t wake[] = {0x6B, 0x00};
     handle_err("waking", i2c_write_blocking(i2c_dev, mpu_addr, wake, 2, false));
     printf("Successfully woke MPU.");
@@ -46,7 +47,6 @@ static void mpu6050_configure() {
 
     uint8_t gyro_conf[] = { 0x1B, 0x18 }; // set to +/- 2000 deg/s
     handle_err("gyro config write", i2c_write_blocking(i2c_dev, mpu_addr, gyro_conf, 2, false));
-    
 
     uint8_t accel_conf[] = { 0x1C, 0x18 }; // set to +/- 16 gs
     handle_err("accel config write", i2c_write_blocking(i2c_dev, mpu_addr, accel_conf, 2, false));
@@ -89,11 +89,12 @@ void blink_led(int num_blinks) {
     } 
 }
 
-int main()
+int yomama()
 {
     stdio_init_all();
     // wait for USB connection
-    while (!tud_cdc_connected());
+    //while (!tud_cdc_connected());
+    sleep_ms(3000);
 
     // Initialise the Wi-Fi chip
     if (cyw43_arch_init()) {
@@ -101,6 +102,8 @@ int main()
         return -1;
     }
     blink_led(3);
+
+    printf("Starting i2c\n");
 
     i2c_init(i2c_dev, 100 * 1000); // 100kHz
     gpio_set_function(i2c_dev_SDA, GPIO_FUNC_I2C);
@@ -124,4 +127,31 @@ int main()
         printf("Chip temp. = %fC\n", temp_data);
     }
     return 0;
+}
+
+int main() {
+    stdio_init_all();
+    i2c_init(i2c1, 1 * 1000);
+    gpio_set_function(i2c_dev_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(i2c_dev_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(i2c_dev_SDA);
+    gpio_pull_up(i2c_dev_SCL);
+
+    while (!tud_cdc_connected()) tight_loop_contents();
+    sleep_ms(1000);
+
+    if (!gpio_get(i2c_dev_SDA) || !gpio_get(i2c_dev_SCL)) {
+        printf("I2C bus stuck low!\n");
+    }   
+
+    printf("Scanning I2C bus...\n");
+    for (int addr = 0; addr < (1 << 7); addr++) {
+        uint8_t rxdata;
+        int ret = i2c_read_blocking(i2c1, addr, &rxdata, 1, false);
+        if (ret >= 0) {
+            printf("Found device at address 0x%02x\n", addr);
+        }
+    }
+    printf("Done.\n");
+    while (1) tight_loop_contents();
 }
