@@ -11,13 +11,13 @@
 struct motor {
     int IN1;
     int IN2;
+    uint slice_IN1, slice_IN2;
+    uint chan_IN1, chan_IN2;
+    int wrap;
 };
 
-static uint getChannel(uint pwm_pin);
-static void configPWMpin(uint pwm_pin);
-
 void addPins(struct motor* motor_pins, uint IN1, uint IN2);
-void setMotorPWM(struct motor motor_pins, float duty_cycle, bool direction);
+void setMotorPWM(struct motor* motor_pins, float duty_cycle, bool forward);
 void pausePWM();
 void unpausePWM();
 

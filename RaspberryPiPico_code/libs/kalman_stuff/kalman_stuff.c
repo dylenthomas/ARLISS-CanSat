@@ -69,22 +69,20 @@ void transpose2x2(float out[4], float matrix[4]) {
 }
 
 void add2x2(float m1[4], float m2[4]) {
-    // matrix addition between two 2x2s
     for (int i = 0; i < 4; i++) {
         m1[i] += m2[i];
     }
 }
 
 void subtract2x2(float m1[4], float m2[4]) {
-    // matrix addition between two 2x2s
     for (int i = 0; i < 4; i++) {
         m1[i] -= m2[i];
     }
 }
 
-void invert2x2(float matrix[4]) {
+bool invert2x2(float matrix[4]) {
     float det = matrix[0] * matrix[3] - matrix[2] * matrix[1];
-    if (det == 0) { return; }
+    if (det == 0) { return false; }
 
     float temp[4];
     temp[0] = matrix[3] / det;
@@ -92,29 +90,39 @@ void invert2x2(float matrix[4]) {
     temp[2] = -matrix[2] / det;
     temp[3] = matrix[0] / det;
     for (int i = 0; i < 4; i++) {matrix[i] = temp[i];}
+
+    return true;
 }
 
 // ------------------------------------------------------------------------------------------------
 static void kalmanPredict(
     float u,
     float dt,
-    float A[4],
-    float B[2],
+    float A_in[4],
+    float B_in[2],
     float xhat[2],
     float P[4],
     float Q[4]
 ) {
+    float A[4];
+    float B[2];
     float Ax[2];
     float AP[4];
     float A_transpose[4];
     float APAt[4];
 
-    // xhat = A*xhat + B*u
+    A[0] = A_in[0];
     A[1] = dt;
+    A[2] = A_in[2];
+    A[3] = A_in[3];
+
     B[0] = -dt;
-    //matmul2x1(Ax, A, xhat);
-    //xhat[0] = Ax[0] + B[0] * u;
-    xhat[0] = xhat[0] + dt * (u + xhat[1]);
+    B[1] = B_in[1];
+
+    // xhat = A*xhat + B*u
+    matmul2x1(Ax, A, xhat);
+    xhat[0] = Ax[0] + B[0] * u;
+    xhat[1] = Ax[1] + B[1] * u;
 
     // P = A*P*A^T + Q
     matmul2x2(AP, A, P);
@@ -123,9 +131,7 @@ static void kalmanPredict(
     add2x2(APAt, Q);
 
     // copy values
-    for (int i = 0; i < 4; i++) {
-        P[i] = APAt[i];
-    }
+    for (int i = 0; i < 4; i++) { P[i] = APAt[i]; }
 }
 
 static void kalmanUpdate(
@@ -156,8 +162,12 @@ static void kalmanUpdate(
     matmul2x2(CP, C, P);
     matmul2x2(CPCt, CP, C_transpose);
     add2x2(CPCt, R);
-    invert2x2(CPCt);
-    matmul2x2(G, PCt, CPCt);
+    if (invert2x2(CPCt)) {
+        matmul2x2(G, PCt, CPCt);
+    }
+    else {
+        return;
+    }
 
     // xhat = xhat + G * (z - C * xhat)
     matmul2x1(Cxhat, C, xhat);

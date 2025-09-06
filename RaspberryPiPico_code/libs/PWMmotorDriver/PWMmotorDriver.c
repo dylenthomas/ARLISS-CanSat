@@ -2,59 +2,48 @@
 
 static bool configured_slices[8] = {false, false, false, false, false, false, false, false};
 
-static uint getChannel(uint pwm_pin) {
-    if (pwm_pin % 2 == 0) {
-        return PWM_CHAN_A;
-    }
-    else {
-        return PWM_CHAN_B;
-    }
-}
-
-static void configPWMpin(uint pwm_pin) {
-    gpio_set_function(pwm_pin, GPIO_FUNC_PWM);
-    uint slice_num = pwm_gpio_to_slice_num(pwm_pin);
-    
-    if (!configured_slices[slice_num]) {
-        pwm_set_wrap(slice_num, 99); // 100 cycles
-        //pwm_set_clkdiv(slice_num, 125);
-        configured_slices[slice_num] = true;
-    }
-}
+static uint16_t wrap_val = 99;
 
 void addPins(struct motor* motor_pins, uint IN1, uint IN2) {
-    configPWMpin(IN1);
-    configPWMpin(IN2);
+    uint IN1_slice = pwm_gpio_to_slice_num(IN1);
+    uint IN2_slice = pwm_gpio_to_slice_num(IN2);
+
+    gpio_set_function(IN1, GPIO_FUNC_PWM);
+    gpio_set_function(IN2, GPIO_FUNC_PWM);
 
     motor_pins->IN1 = IN1;
+    motor_pins->slice_IN1 = IN1_slice;
+    motor_pins->chan_IN1 = pwm_gpio_to_channel(IN1);
+
     motor_pins->IN2 = IN2;
+    motor_pins->slice_IN2 = IN2_slice;
+    motor_pins->chan_IN2 = pwm_gpio_to_channel(IN2);
+
+    motor_pins->wrap = wrap_val;
+
+    if (!configured_slices[motor_pins->slice_IN1]) {
+        pwm_set_wrap(motor_pins->slice_IN1, wrap_val);
+        pwm_set_enabled(motor_pins->slice_IN1, true);
+        configured_slices[motor_pins->slice_IN1] = true;
+    }
+    if (!configured_slices[motor_pins->slice_IN2]) {
+        pwm_set_wrap(motor_pins->slice_IN2, wrap_val);
+        pwm_set_enabled(motor_pins->slice_IN2, true);
+        configured_slices[motor_pins->slice_IN2] = true;
+    }
 }
 
-void setMotorPWM(struct motor motor_pins, float duty_cycle, bool direction) {
-    uint drive_pin, low_pin;
-    if (direction) {
-        drive_pin = motor_pins.IN1;
-        low_pin = motor_pins.IN2;
+void setMotorPWM(struct motor* motor_pins, float duty_cycle, bool forward) {
+    uint16_t level = (uint16_t)(duty_cycle * motor_pins->wrap);
+
+    if (forward) {
+        pwm_set_chan_level(motor_pins->slice_IN1, motor_pins->chan_IN1, level);
+        pwm_set_chan_level(motor_pins->slice_IN2, motor_pins->chan_IN2, 0);
     }
     else {
-        drive_pin = motor_pins.IN2;
-        low_pin = motor_pins.IN1;
+        pwm_set_chan_level(motor_pins->slice_IN1, motor_pins->chan_IN1, 0);
+        pwm_set_chan_level(motor_pins->slice_IN2, motor_pins->chan_IN2, level);
     }
-    uint slice_num_drive = pwm_gpio_to_slice_num(drive_pin);
-    uint chan_drive = getChannel(drive_pin);
-    uint slice_num_low = pwm_gpio_to_slice_num(low_pin);
-    uint chan_low = getChannel(low_pin);
-
-    uint16_t wrap_val = pwm_hw->slice[slice_num_drive].top;
-    uint16_t flip_val = (uint16_t)(duty_cycle * wrap_val);
-
-    gpio_set_function(drive_pin, GPIO_FUNC_PWM);
-    pwm_set_chan_level(slice_num_drive, chan_drive, flip_val);
-    pwm_set_enabled(slice_num_drive, true);
-
-    gpio_set_function(low_pin, GPIO_FUNC_SIO);
-    gpio_set_dir(low_pin, true);
-    gpio_put(low_pin, 0);  
 }
 
 void pausePWM() {

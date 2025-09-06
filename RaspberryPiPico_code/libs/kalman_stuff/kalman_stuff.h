@@ -1,5 +1,7 @@
 #ifndef KALMAN_VARS_H
 
+#include <stdbool.h>
+
 #define KALMAN_VARS_H
 #ifndef PI
 #define PI 3.14159265359
@@ -26,7 +28,7 @@ void matmul2x1(float out[2], float m1[4], float m2[2]);
 void transpose2x2(float out[4], float matrix[4]);
 void add2x2(float m1[4], float m2[4]);
 void subtract2x2(float m1[4], float m2[4]);
-void invert2x2(float matrix[4]);
+bool invert2x2(float matrix[4]);
 
 // ------------------------------------------------------------------------------------------------
 static void kalmanPredict(float u, float dt, float A[4], float B[2], float xhat[2], float P[4], float Q[4]);

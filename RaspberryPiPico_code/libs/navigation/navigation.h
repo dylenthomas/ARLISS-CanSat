@@ -15,7 +15,17 @@
 
 void set_ref_pos(float ref_lon, float ref_lat, float ref_height);
 
-static void LLH_to_ECEF(float lon, float lat, float height);
-void computeNEDpos(float lon, float lat, float height, float out[3]);
+static void LLH_to_ECEF_deg(float lon, float lat, float height, float out[3]);
+
+/*
+Convert LLH coordinate format to NED (local X, Y, Z)
+    *pass the values in degrees
+*/
+void computeNEDpos_deg(float lon, float lat, float height, float out[3]);
+/*
+Compute the azimuth angle between current lat and lon and destination lat and lon
+    *pass the values in degrees
+*/
+float azimuth_deg(float lat1, float lon1, float lat2, float lon2);
 
 #endif
