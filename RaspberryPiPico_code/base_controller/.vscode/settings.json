@@ -48,6 +48,7 @@
         "stdint.h": "c",
         "i2c.h": "c",
         "kalman_stuff.h": "c",
-        "pwmmotordriver.h": "c"
+        "pwmmotordriver.h": "c",
+        "lora.h": "c"
     }
 }

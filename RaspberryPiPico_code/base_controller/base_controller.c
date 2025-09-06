@@ -2,6 +2,7 @@
 #include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
+#include "hardware/spi.h"
 
 #include "Neo6M_UBXParser.h"
 #include "mpu6050.h"
@@ -10,6 +11,7 @@
 #include "PWMmotorDriver.h"
 #include "ff.h"
 #include "sd_card.h"
+#include "LoRa.h"
 
 FATFS fs;
 FIL file;
@@ -86,11 +88,35 @@ void setTarget() {
 #define acc_landed_b 1.1
 #define landed_time_thres_us 0.5 * 1e6 // us
 
+#define CS_pin 9
+#define RST_pin 8
+#define IRQ_pin -1
+#define SCK_pin 14
+#define MOSI_pin 11
+#define MISO_pin 12
+#define Tx_interval 2 * 1e6 // us
+#define LoRa_freq 915 * 1e6 // Hz
+#define LoRa_sprd_factor 10 //12
+#define LoRa_bw 125 * 1e3 //7.8 * 1e3
+#define LoRa_cdng_rt 8
+#define LoRa_tx_pwr 20
+#define LoRa_use_PA_bst 1
+#define LoRa_preamble_len 8 //12
+#define LoRa_sync_wrd 0x12
+
+// Servo PWM Struct -------------------------------------------------------------------------------
 struct servoPWM {
     uint pin;
     uint slice;
     uint chan;
 } parachute_servo;
+
+// SPI Struct -------------------------------------------------------------------------------------
+typedef struct {
+    spi_inst_t *spi;
+    uint cs_pin;
+} pico_spi_context_t;
+absolute_time_t lastTx;
 
 // Motor Pin Structs ------------------------------------------------------------------------------
 struct motor MotorRight;
@@ -179,6 +205,71 @@ void control(float target_heading, float current_heading) {
 
     setMotorPWM(&MotorRight, u_r, (u_r_internal) > (0.0) ? (FORWARD): (REVERSE));
     setMotorPWM(&MotorLeft, u_l, (u_l_internal) > (0.0) ? (FORWARD): (REVERSE));
+}
+// SPI Funcs --------------------------------------------------------------------------------------
+void pico_spi_transfer(void* user, const uint8_t* tx, uint8_t* rx, size_t n) {
+    pico_spi_context_t* ctx = (pico_spi_context_t* )user;
+    spi_inst_t* spi = ctx->spi;
+
+    if (tx && rx) {
+        spi_write_read_blocking(spi, tx, rx, n);
+    }
+    else if (tx) {
+        spi_write_blocking(spi, tx, n);
+    }
+    else if (rx) {
+        spi_read_blocking(spi, 0, rx, n);
+    }
+}
+
+void pico_cs_set(void* user, bool active) {
+    pico_spi_context_t* ctx = (pico_spi_context_t* )user;
+    gpio_put(ctx->cs_pin, active ? 0 : 1);
+}
+
+void pico_delay_ms(void* user, uint32_t ms) {
+    sleep_ms(ms);
+}
+
+void pico_gpio_write(void* user, int pin, bool level) {
+    gpio_put(pin, level);
+}
+
+bool pico_gpio_read(void* user, int pin) {
+    return gpio_get(pin);
+}
+
+void pico_spi_set_frequency(void* user, uint32_t hz) {
+    pico_spi_context_t* ctx = (pico_spi_context_t* )user;
+    spi_set_baudrate(ctx->spi, hz);
+}
+
+pico_spi_context_t spi_ctx = {
+    .spi = spi1,
+    .cs_pin = CS_pin
+};
+
+lora_hal_t pico_hal = {
+    .spi_transfer = pico_spi_transfer,
+    .cs_set = pico_cs_set,
+    .delay_ms = pico_delay_ms,
+    .gpio_write = pico_gpio_write,
+    .gpio_read = pico_gpio_read,
+    .spi_set_frequency = pico_spi_set_frequency,
+    .user = (void* )&spi_ctx
+};
+
+LoRa* lora;
+
+void LoRa_transmit(float lat, float lon) {
+    char payload[30];
+    snprintf(payload, sizeof(payload), "%f,%f", lat, lon);
+
+    lora_begin_packet(lora, 0);
+    lora_write(lora, (const uint8_t* )payload, strlen(payload));
+    lora_end_packet(lora, false);
+
+    printf("Transmitted '%s' though LoRa\n", payload);
 }
 // ------------------------------------------------------------------------------------------------
 
@@ -313,6 +404,45 @@ int main()
     gpio_pull_up(i2c_dev_SDA);
     gpio_pull_up(i2c_dev_SCL);
 
+    printf("Setting up LoRa transmitter...\n");
+
+    spi_init(spi1, 8 * 1e6);
+    printf("Setting SPI data pins...\n");
+    gpio_set_function(SCK_pin, GPIO_FUNC_SPI);
+    gpio_set_function(MOSI_pin, GPIO_FUNC_SPI);
+    gpio_set_function(MISO_pin, GPIO_FUNC_SPI);
+
+    printf("Setting CS pin...\n");
+    gpio_init(CS_pin);
+    gpio_set_dir(CS_pin, GPIO_OUT);
+    gpio_put(CS_pin, 1);
+
+    printf("Setting RST pin...\n");
+    gpio_init(RST_pin);
+    gpio_set_dir(RST_pin, GPIO_OUT);
+    gpio_put(RST_pin, 1);
+
+    printf("Creating LoRa instance...\n");
+    lora = lora_create(&pico_hal, CS_pin, RST_pin, IRQ_pin);
+    if (!lora) {
+        printf("Failed to create LoRa instance!!\n");
+        while (1) tight_loop_contents();
+    }
+
+    printf("Configuring LoRa settings...\n");
+    lora_set_spreading_factor(lora, LoRa_sprd_factor);
+    lora_set_signal_bandwidth(lora, LoRa_bw); // 7.8kHz
+    lora_set_coding_rate4(lora, LoRa_cdng_rt);
+    lora_set_tx_power(lora, LoRa_tx_pwr, LoRa_use_PA_bst); // 20dBm, PA_BOOST
+    lora_set_preamble_length(lora, LoRa_preamble_len);
+    lora_set_sync_word(lora, LoRa_sync_wrd);
+
+    printf("Initializing LoRa...\n");
+    while (!lora_begin(lora, LoRa_freq)) {
+        printf("Failed to initialize LoRa!\n");
+        while (1) tight_loop_contents();
+    }
+
     printf("Waking mpu6050...\n");
     mpu6050_wake(true);
     mpu6050_ping();
@@ -391,7 +521,11 @@ int main()
 
     //log_line(&file, posllh.iTOW, -1.0, -1.0, dest_heading * RAD_TO_DEG, posllh.lat, posllh.lon, posllh.hMSL, destination[0], destination[1]);
 
+    //LoRa_transmit(posllh.lat, posllh.lon);
+    lastTx = get_absolute_time();
+
     //sleep_ms(10000); // give parachute time to detach
+
     sleep_ms(2000);
 
     findHeading();
@@ -461,7 +595,12 @@ int main()
             log_line(&file, posllh.iTOW, -1.0, est_heading * RAD_TO_DEG, dest_heading * RAD_TO_DEG, posllh.lat, posllh.lon, posllh.hMSL, dN, dE);
             f_close(&file);
             f_mount(NULL, "0:", 0);
-            while (true) tight_loop_contents();
+            while (true) {
+                if (absolute_time_diff_us(lastTx, get_absolute_time()) >= Tx_interval) {
+                    //LoRa_transmit(posllh.lat, posllh.lon);
+                    lastTx = get_absolute_time();
+                }   
+            }
         }
 
         if (absolute_time_diff_us(last_log, get_absolute_time()) >= (int)(1e6/control_log_rate)) {           
@@ -474,6 +613,11 @@ int main()
             }
 
             last_log = get_absolute_time();
+        }
+
+        if (absolute_time_diff_us(lastTx, get_absolute_time()) >= Tx_interval) {
+            //LoRa_transmit(posllh.lat, posllh.lon);
+            lastTx = get_absolute_time();
         }
 
         while (!status.gpsFixOk) {

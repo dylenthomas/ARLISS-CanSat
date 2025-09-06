@@ -77,6 +77,11 @@ target_include_directories(kalman_filter PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/../libs/kalman_stuff
 )
 
+add_library(LoRa ../libs/LoRa/LoRa.c)
+target_include_directories(LoRa PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/../libs/LoRa
+)
+
 pico_set_program_name(base_controller "base_controller")
 pico_set_program_version(base_controller "0.1")
 
@@ -103,6 +108,7 @@ target_link_libraries(base_controller
         hardware_i2c
         hardware_pwm
         FatFs_SPI
+        LoRa
         )
 
 pico_add_extra_outputs(base_controller)
