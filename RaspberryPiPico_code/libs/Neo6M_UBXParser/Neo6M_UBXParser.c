@@ -16,7 +16,6 @@ static int msg_len;
 //static uint16_t len;
 static unsigned char buffer[assumed_buf_len];
 static int is_valid = 0;
-static int num_flags;
 static int flags;
 static bool flag;
 
@@ -68,8 +67,6 @@ static struct VELNED {
 void zeroValues() {
     pos = 0;
     msg_idx = 0;
-    //msg_len = 0;
-    //len = 0;
     memset(buffer, 0, assumed_buf_len);
     memset(checksum, 0, 2);
     is_valid = 0;
@@ -209,7 +206,7 @@ struct statusData getSTATUS() {
     status_data.iTOW = statusMessage.iTOW;
     status_data.gpsFix = (int)(statusMessage.gpsFix);
 
-    for (int i = 0; i < num_flags; i++) {
+    for (int i = 0; i < 4; i++) {
         flag = (flags & (0x01 << i)) != 0;
 
         switch (i) {

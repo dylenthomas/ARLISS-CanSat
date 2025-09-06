@@ -42,6 +42,9 @@ int main()
         while(uart_is_readable(UART_ID)) {
             c = uart_getc(UART_ID);
             int len = addByte(c);
+            pos = get_pos();
+            is_valid = get_is_valid();
+            printf("pos = %d, is_valid = %d\n", pos, is_valid);
         }
 
         if (posllhChanged()) {
