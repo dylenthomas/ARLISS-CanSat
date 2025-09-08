@@ -65,7 +65,7 @@ void setTarget() {
 #define imu_polling 100 // Hz
 
 #define Vforward 0.95
-#define KaP 0.6
+#define KaP 0.62
 #define KaD 0.1
 #define stopping_dist 5 // m
 
@@ -98,7 +98,7 @@ void setTarget() {
 #define LoRa_freq 915 * 1e6 // Hz
 #define LoRa_sprd_factor 10 //12
 #define LoRa_bw 125 * 1e3 //7.8 * 1e3
-#define LoRa_cdng_rt 8
+#define LoRa_cdng_rt 6//8
 #define LoRa_tx_pwr 20
 #define LoRa_use_PA_bst 1
 #define LoRa_preamble_len 8 //12
@@ -366,11 +366,11 @@ void findHeading() {
         if (absolute_time_diff_us(last_toggle, get_absolute_time()) >= toggle_time) {
             if (i) {
                 setMotorPWM(&MotorRight, duty_cycle, FORWARD);
-                setMotorPWM(&MotorLeft, duty_cycle, REVERSE);
+                setMotorPWM(&MotorLeft, duty_cycle, FORWARD);
             }
             else {
                 setMotorPWM(&MotorLeft, duty_cycle, FORWARD);
-                setMotorPWM(&MotorRight, duty_cycle, REVERSE);
+                setMotorPWM(&MotorRight, duty_cycle, FORWARD);
             }
             i ^= 1;
             last_toggle = get_absolute_time();

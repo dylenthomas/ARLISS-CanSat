@@ -112,11 +112,11 @@ int main() {
     }
     
     // Configure LoRa (must match receiver settings)
-    lora_set_spreading_factor(lora, 12);
-    lora_set_signal_bandwidth(lora, 7800); // 7.8kHz
-    lora_set_coding_rate4(lora, 8);
+    lora_set_spreading_factor(lora, 10);
+    lora_set_signal_bandwidth(lora, 125*1e3); // 7.8kHz
+    lora_set_coding_rate4(lora, 6);
     lora_set_tx_power(lora, 20, 1); // 20dBm, PA_BOOST
-    lora_set_preamble_length(lora, 12);
+    lora_set_preamble_length(lora, 8);
     lora_set_sync_word(lora, 0x12);
     
     // Initialize LoRa
