@@ -65,7 +65,7 @@ void setTarget() {
 #define imu_polling 100 // Hz
 
 #define Vforward 0.95
-#define KaP 0.62
+#define KaP 0.7
 #define KaD 0.1
 #define stopping_dist 5 // m
 
@@ -83,7 +83,7 @@ void setTarget() {
 #define control_log_rate 2 // Hz
 
 #define accel_fall_thres 0.4
-#define fall_time_thres_us 1*1e5//5 * 1e5 // us
+#define fall_time_thres_us 0.5*1e6 // us
 #define acc_landed_a 0.9
 #define acc_landed_b 1.1
 #define landed_time_thres_us 0.5 * 1e6 // us
@@ -521,7 +521,7 @@ int main()
 
     //log_line(&file, posllh.iTOW, -1.0, -1.0, dest_heading * RAD_TO_DEG, posllh.lat, posllh.lon, posllh.hMSL, destination[0], destination[1]);
 
-    //LoRa_transmit(posllh.lat, posllh.lon);
+    LoRa_transmit(posllh.lat, posllh.lon);
     lastTx = get_absolute_time();
 
     //sleep_ms(10000); // give parachute time to detach
@@ -554,11 +554,27 @@ int main()
 
             dN = destination[0] - xhat_X[0];
             dE = destination[1] - xhat_Y[0];
+
             //dN = destination[0] - current_pos[0];
             //dE = destination[1] - current_pos[1];
             //dest_heading = boundTo2Pi(atan2(dE, dN));
 
             //printf("Destination: [%f, %f, %f], Position: [%f, %f, %f], heading to destination: %f, current heading: %f\n", destination[0], destination[1], destination[2], xhat_X[0], xhat_Y[0], current_pos[2], dest_heading * RAD_TO_DEG, est_heading);
+            
+            if (sqrt(dN * dN + dE * dE) < stopping_dist) {
+                pausePWM();
+                printf("dN = %f, dE = %f\n", dN, dE);
+                printf("Reached destination!\n");
+                log_line(&file, posllh.iTOW, -1.0, est_heading * RAD_TO_DEG, dest_heading * RAD_TO_DEG, posllh.lat, posllh.lon, posllh.hMSL, dN, dE);
+                f_close(&file);
+                f_mount(NULL, "0:", 0);
+                while (true) {
+                    if (absolute_time_diff_us(lastTx, get_absolute_time()) >= Tx_interval) {
+                        LoRa_transmit(posllh.lat, posllh.lon);
+                        lastTx = get_absolute_time();
+                    }   
+                }
+            }
         }
 
         if (absolute_time_diff_us(last_imu_time, get_absolute_time()) >= (int)(1e6/imu_polling)) {            
@@ -580,7 +596,7 @@ int main()
             last_velocity = get_absolute_time();
 
             z_heading[0] = velned.heading;
-            printf("VELNED Heading = %f\n", z_heading[0]);
+            //printf("VELNED Heading = %f\n", z_heading[0]);
             kalmanUpdate_heading();
             //printf("VELNED CHANGED\n");
         }
@@ -588,20 +604,6 @@ int main()
         //est_heading = boundTo2Pi(xhat_heading[0] * DEG_TO_RAD);
         //printf("\tEstimated heading = %f, xhat_heading = %f\n", est_heading, xhat_heading[0]);
         //control(dest_heading, est_heading);
-
-        if (sqrt(dN * dN + dE * dE) < stopping_dist) {
-            pausePWM();
-            printf("Reached destination!\n");
-            log_line(&file, posllh.iTOW, -1.0, est_heading * RAD_TO_DEG, dest_heading * RAD_TO_DEG, posllh.lat, posllh.lon, posllh.hMSL, dN, dE);
-            f_close(&file);
-            f_mount(NULL, "0:", 0);
-            while (true) {
-                if (absolute_time_diff_us(lastTx, get_absolute_time()) >= Tx_interval) {
-                    //LoRa_transmit(posllh.lat, posllh.lon);
-                    lastTx = get_absolute_time();
-                }   
-            }
-        }
 
         if (absolute_time_diff_us(last_log, get_absolute_time()) >= (int)(1e6/control_log_rate)) {           
             unsigned long timestamp = posllh.iTOW;
@@ -616,7 +618,7 @@ int main()
         }
 
         if (absolute_time_diff_us(lastTx, get_absolute_time()) >= Tx_interval) {
-            //LoRa_transmit(posllh.lat, posllh.lon);
+            LoRa_transmit(posllh.lat, posllh.lon);
             lastTx = get_absolute_time();
         }
 
