@@ -3,7 +3,7 @@ import asyncio
 import os
 import sys
 
-# Add keyboard detection based on platform
+
 try:
     if sys.platform == 'win32':
         import msvcrt
@@ -14,7 +14,7 @@ try:
 except ImportError:
     print("Warning: Keyboard input may not work on this platform")
 
-# For Linux/Mac: Use pynput for proper key press/release detection
+
 try:
     from pynput import keyboard
     USE_PYNPUT = True
@@ -30,7 +30,7 @@ UU_WRITE   = "14128a76-04d1-6cq4f-7e53-f2e80200b119"
 NOTIFY_FORMS = {UU_NOTIFY.lower()}
 WRITE_FORMS  = {UU_WRITE.lower()}
 
-# Track key states (True = pressed, False = released)
+
 key_states = {'w': False, 'a': False, 's': False, 'd': False}
 state_changed = asyncio.Event()
 
@@ -82,12 +82,12 @@ class KeyboardListener:
             if hasattr(key, 'char') and key.char:
                 k = key.char.lower()
                 if k in ['w', 'a', 's', 'd']:
-                    if not key_states[k]:  # Only trigger if was False
+                    if not key_states[k]:
                         key_states[k] = True
                         state_changed.set()
                 elif k == 'q':
                     self.running = False
-                    return False  # Stop listener
+                    return False
         except AttributeError:
             pass
     
@@ -96,7 +96,7 @@ class KeyboardListener:
             if hasattr(key, 'char') and key.char:
                 k = key.char.lower()
                 if k in ['w', 'a', 's', 'd']:
-                    if key_states[k]:  # Only trigger if was True
+                    if key_states[k]: 
                         key_states[k] = False
                         state_changed.set()
         except AttributeError:
@@ -128,7 +128,7 @@ async def main():
                 return
             print("Connected.")
 
-            # Discover services
+
             services = await wait_for_services(client, timeout=6.0)
             print("=== Services/Characteristics discovered ===")
             if services:
@@ -139,7 +139,7 @@ async def main():
             else:
                 print("(no services yet)")
 
-            # Find characteristics
+
             notify_char = write_char = None
             if services:
                 for svc in services:
@@ -166,12 +166,12 @@ async def main():
                 if msg == "<READY>":
                     ready.set()
 
-            # Start notifications
+
             print("Starting notifications...")
             await client.start_notify(notify_char, on_notify)
             print("Notifications enabled.")
 
-            # Wait for handshake
+
             try:
                 await asyncio.wait_for(ready.wait(), timeout=5.0)
                 print("Device is READY.")
@@ -195,7 +195,7 @@ async def main():
             print_status()
 
             if USE_PYNPUT:
-                # Use pynput for proper press/release detection
+
                 kb_listener = KeyboardListener()
                 kb_listener.start()
                 
@@ -203,14 +203,14 @@ async def main():
                 
                 try:
                     while kb_listener.running:
-                        # Wait for state change or timeout
+
                         try:
                             await asyncio.wait_for(state_changed.wait(), timeout=0.1)
                             state_changed.clear()
                         except asyncio.TimeoutError:
                             pass
                         
-                        # Format and send command
+
                         cmd = format_command(
                             key_states['w'],
                             key_states['a'],
@@ -223,12 +223,12 @@ async def main():
                             last_cmd = cmd
                             print_status()
                         
-                        # Small delay
+
                         await asyncio.sleep(0.01)
                 finally:
                     kb_listener.stop()
             else:
-                # Fallback: Basic keyboard detection (Windows only)
+
                 print("Basic mode active. This may not detect key releases properly.")
                 last_cmd = None
                 
@@ -239,7 +239,7 @@ async def main():
                         if key == 'q':
                             break
                         elif key in ['w', 'a', 's', 'd']:
-                            # In basic mode, toggle on press
+
                             key_states[key] = not key_states[key]
                             
                             cmd = format_command(
@@ -256,7 +256,7 @@ async def main():
                     
                     await asyncio.sleep(0.01)
 
-            # Turn off all LEDs on exit
+
             await client.write_gatt_char(write_char, b"WASD:0000", response=True)
             print("\n\nAll LEDs turned off.")
 

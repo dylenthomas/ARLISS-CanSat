@@ -10,13 +10,11 @@
 #include "att_db_util.h"
 #include "PWMmotorDriver.h"
 
-// Motor Pin assignments (from base_controller.c)
 #define m1_IN1 13
 #define m1_IN2 15
 #define m2_IN1 6
 #define m2_IN2 7
 
-// Motor Control Parameters
 #define Vforward 0.95
 #define Vturn 0.7
 #define min_DC 0.4
@@ -34,22 +32,21 @@ static uint16_t write_val_handle  = 0;
 static uint16_t notify_cccd_handle = 0;
 static int      notify_enabled = 0;
 
-// Motor states
-static bool cmd_w = false;  // Forward
-static bool cmd_a = false;  // Left
-static bool cmd_s = false;  // Backward
-static bool cmd_d = false;  // Right
+static bool cmd_w = false;
+static bool cmd_a = false;
+static bool cmd_s = false;
+static bool cmd_d = false;
 
-// Motor structures
+
 struct motor MotorRight;
 struct motor MotorLeft;
 
-// Simple single-message queue for notifications
+
 #define MSG_MAX 128
 static char pending_msg[MSG_MAX];
 static uint16_t pending_len = 0;
 
-// Helper functions
+
 static float constrainFloat(float x, float min, float max) {
     return ((x) < (min) ? (min) : ((x) > (max) ? (max) : (x)));
 }
@@ -61,7 +58,7 @@ static float absFloat(float x) {
 static void queue_note(const char *s){
     if (!s) return;
     if (connection_handle == HCI_CON_HANDLE_INVALID || !notify_enabled) return;
-    if (pending_len) return; // drop if previous hasn't been sent yet
+    if (pending_len) return;
     size_t n = strlen(s);
     if (n > MSG_MAX) n = MSG_MAX;
     memcpy(pending_msg, s, n);
@@ -69,18 +66,18 @@ static void queue_note(const char *s){
     att_server_request_can_send_now_event(connection_handle);
 }
 
-// Motor control function based on WASD inputs
+
 static void update_motors(void){
     float u_l = 0.0;
     float u_r = 0.0;
     
-    // Priority: Forward/Backward take precedence, then add turning
+
     if (cmd_w && !cmd_s) {
         // Forward
         u_l = Vforward;
         u_r = Vforward;
         
-        // Add turning while moving forward
+
         if (cmd_a && !cmd_d) {
             // Forward + Left: slow down left motor
             u_l = Vforward - Vturn;
@@ -93,7 +90,7 @@ static void update_motors(void){
         u_l = -Vforward;
         u_r = -Vforward;
         
-        // Add turning while moving backward
+
         if (cmd_a && !cmd_d) {
             // Backward + Left: slow down left motor
             u_l = -Vforward + Vturn;
@@ -102,17 +99,15 @@ static void update_motors(void){
             u_r = -Vforward + Vturn;
         }
     } else if (cmd_a && !cmd_d) {
-        // Pure left turn (rotate in place)
+        // rotate left
         u_l = -Vturn;
         u_r = Vturn;
     } else if (cmd_d && !cmd_a) {
-        // Pure right turn (rotate in place)
+        // rotate right
         u_l = Vturn;
         u_r = -Vturn;
     }
-    // If no commands or conflicting commands (W+S or A+D), motors stop (0,0)
     
-    // Apply motor commands
     float duty_l = constrainFloat(absFloat(u_l), min_DC, max_DC);
     float duty_r = constrainFloat(absFloat(u_r), min_DC, max_DC);
     
@@ -132,12 +127,11 @@ static void update_motors(void){
            cmd_w?1:0, cmd_a?1:0, cmd_s?1:0, cmd_d?1:0, u_l, u_r);
 }
 
-// 10 Hz status streaming
 static btstack_timer_source_t stream_timer;
 
 static void restart_stream_timer(void){
     if (!notify_enabled || connection_handle == HCI_CON_HANDLE_INVALID) return;
-    btstack_run_loop_set_timer(&stream_timer, 100);   // 10 Hz
+    btstack_run_loop_set_timer(&stream_timer, 100);
     btstack_run_loop_add_timer(&stream_timer);
 }
 
@@ -152,12 +146,10 @@ static void stream_cb(btstack_timer_source_t *ts){
     restart_stream_timer();
 }
 
-// UUIDs (little-endian bytes)
 static const uint8_t UUID_SVC_19B1_0000[16] = {0x14,0x12,0x8a,0x76,0x04,0xd1,0x6c,0x4f,0x7e,0x53,0xf2,0xe8,0x00,0x00,0xb1,0x19};
 static const uint8_t UUID_CHR_19B1_0001[16] = {0x14,0x12,0x8a,0x76,0x04,0xd1,0x6c,0x4f,0x7e,0x53,0xf2,0xe8,0x01,0x00,0xb1,0x19};
 static const uint8_t UUID_CHR_19B1_0002[16] = {0x14,0x12,0x8a,0x76,0x04,0xd1,0x6c,0x4f,0x7e,0x53,0xf2,0xe8,0x02,0x00,0xb1,0x19};
 
-// Advertise data
 static uint8_t adv_data[] = {
     0x02, 0x01, 0x06,
     0x11, 0x07,
@@ -168,7 +160,6 @@ static uint8_t scan_resp[] = {
     0x08, 0x09, 'P','i','c','o','B','L','E'
 };
 
-// ATT callbacks
 static uint16_t att_read_cb(hci_con_handle_t con_handle, uint16_t att_handle, uint16_t offset,
                             uint8_t *buffer, uint16_t buffer_size){
     (void)con_handle; (void)att_handle; (void)offset;
@@ -183,7 +174,6 @@ static int att_write_cb(hci_con_handle_t con_handle, uint16_t att_handle, uint16
                         uint16_t offset, uint8_t *data, uint16_t len){
     (void)con_handle; (void)transaction_mode; (void)offset;
 
-    // Client toggled notifications?
     if (att_handle == notify_cccd_handle){
         int en = 0;
         if (len >= 2){
@@ -200,7 +190,6 @@ static int att_write_cb(hci_con_handle_t con_handle, uint16_t att_handle, uint16
         return 0;
     }
 
-    // Command written to write characteristic?
     if (att_handle == write_val_handle){
         if (len == 0 || len > 120) return 0;
 
@@ -208,8 +197,6 @@ static int att_write_cb(hci_con_handle_t con_handle, uint16_t att_handle, uint16
         memcpy(cmd, data, len); 
         cmd[len] = '\0';
 
-        // Parse WASD command format: "WASD:wxaxsxdx" where x is 0 or 1
-        // Example: "WASD:1010" means W=on, A=off, S=on, D=off
         if (len >= 9 && strncmp(cmd, "WASD:", 5) == 0){
             cmd_w = (cmd[5] == '1');
             cmd_a = (cmd[6] == '1');
@@ -227,7 +214,6 @@ static int att_write_cb(hci_con_handle_t con_handle, uint16_t att_handle, uint16
     return 0;
 }
 
-// HCI / ATT event handler
 static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size){
     (void)channel; (void)size;
     if (packet_type != HCI_EVENT_PACKET) return;
@@ -259,7 +245,6 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             connection_handle = HCI_CON_HANDLE_INVALID;
             notify_enabled = 0;
             pending_len = 0;
-            // Stop all motors on disconnect
             cmd_w = cmd_a = cmd_s = cmd_d = false;
             update_motors();
             gap_advertisements_enable(1);
@@ -281,7 +266,6 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 static void build_gatt(void){
     att_db_util_init();
 
-    // GAP: Device Name
     att_db_util_add_service_uuid16(0x1800);
     att_db_util_add_characteristic_uuid16(
         0x2A00, ATT_PROPERTY_READ,
@@ -289,7 +273,6 @@ static void build_gatt(void){
         (uint8_t*)"PicoBLE", 7
     );
 
-    // GATT: Service Changed
     uint8_t svc_changed_val[4] = {0x00,0x00,0x00,0x00};
     att_db_util_add_service_uuid16(0x1801);
     att_db_util_add_characteristic_uuid16(
@@ -298,10 +281,10 @@ static void build_gatt(void){
         svc_changed_val, sizeof(svc_changed_val)
     );
 
-    // Custom service
+
     att_db_util_add_service_uuid128(UUID_SVC_19B1_0000);
 
-    // Notify characteristic
+
     uint8_t init_notify_val[1] = {0x00};
     notify_val_handle = att_db_util_add_characteristic_uuid128(
         UUID_CHR_19B1_0001,
@@ -311,7 +294,7 @@ static void build_gatt(void){
     );
     notify_cccd_handle = (uint16_t)(notify_val_handle + 1);
 
-    // Write characteristic
+
     write_val_handle = att_db_util_add_characteristic_uuid128(
         UUID_CHR_19B1_0002,
         ATT_PROPERTY_WRITE | ATT_PROPERTY_DYNAMIC,
@@ -333,12 +316,12 @@ int main(void){
         return 1;
     }
     
-    // Initialize motors
+
     printf("Configuring motor PWM...\n");
     addPins(&MotorRight, m1_IN1, m1_IN2);
     addPins(&MotorLeft, m2_IN1, m2_IN2);
     
-    // Ensure motors start stopped
+
     setMotorPWM(&MotorRight, 0.0, FORWARD);
     setMotorPWM(&MotorLeft, 0.0, FORWARD);
 
