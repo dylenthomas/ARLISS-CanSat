@@ -1,21 +1,30 @@
-// BLE peripheral for Raspberry Pi Pico W - WASD LED Controller
-// Real-time LED control via BLE: W=GP16, A=GP14, S=GP15, D=GP13
-// Sends status updates at 10Hz when notifications are enabled
 
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 #include "btstack.h"
 #include "btstack_run_loop.h"
 #include "att_db_util.h"
+#include "PWMmotorDriver.h"
 
-// GPIO Pin assignments
-#define PIN_W 16
-#define PIN_A 14
-#define PIN_S 15
-#define PIN_D 13
+// Motor Pin assignments (from base_controller.c)
+#define m1_IN1 13
+#define m1_IN2 15
+#define m2_IN1 6
+#define m2_IN2 7
+
+// Motor Control Parameters
+#define Vforward 0.95
+#define Vturn 0.7
+#define min_DC 0.4
+#define max_DC 1.0
+
+#ifndef PI
+#define PI 3.14159265359
+#endif
 
 static hci_con_handle_t connection_handle = HCI_CON_HANDLE_INVALID;
 static btstack_packet_callback_registration_t hci_event_cb;
@@ -25,16 +34,29 @@ static uint16_t write_val_handle  = 0;
 static uint16_t notify_cccd_handle = 0;
 static int      notify_enabled = 0;
 
-// LED states
-static bool led_w = false;
-static bool led_a = false;
-static bool led_s = false;
-static bool led_d = false;
+// Motor states
+static bool cmd_w = false;  // Forward
+static bool cmd_a = false;  // Left
+static bool cmd_s = false;  // Backward
+static bool cmd_d = false;  // Right
+
+// Motor structures
+struct motor MotorRight;
+struct motor MotorLeft;
 
 // Simple single-message queue for notifications
 #define MSG_MAX 128
 static char pending_msg[MSG_MAX];
 static uint16_t pending_len = 0;
+
+// Helper functions
+static float constrainFloat(float x, float min, float max) {
+    return ((x) < (min) ? (min) : ((x) > (max) ? (max) : (x)));
+}
+
+static float absFloat(float x) {
+    return((x) < (0.0) ? (x * -1.0) : (x));
+}
 
 static void queue_note(const char *s){
     if (!s) return;
@@ -47,7 +69,68 @@ static void queue_note(const char *s){
     att_server_request_can_send_now_event(connection_handle);
 }
 
-static inline uint32_t now_ms(void){ return to_ms_since_boot(get_absolute_time()); }
+// Motor control function based on WASD inputs
+static void update_motors(void){
+    float u_l = 0.0;
+    float u_r = 0.0;
+    
+    // Priority: Forward/Backward take precedence, then add turning
+    if (cmd_w && !cmd_s) {
+        // Forward
+        u_l = Vforward;
+        u_r = Vforward;
+        
+        // Add turning while moving forward
+        if (cmd_a && !cmd_d) {
+            // Forward + Left: slow down left motor
+            u_l = Vforward - Vturn;
+        } else if (cmd_d && !cmd_a) {
+            // Forward + Right: slow down right motor
+            u_r = Vforward - Vturn;
+        }
+    } else if (cmd_s && !cmd_w) {
+        // Backward
+        u_l = -Vforward;
+        u_r = -Vforward;
+        
+        // Add turning while moving backward
+        if (cmd_a && !cmd_d) {
+            // Backward + Left: slow down left motor
+            u_l = -Vforward + Vturn;
+        } else if (cmd_d && !cmd_a) {
+            // Backward + Right: slow down right motor
+            u_r = -Vforward + Vturn;
+        }
+    } else if (cmd_a && !cmd_d) {
+        // Pure left turn (rotate in place)
+        u_l = -Vturn;
+        u_r = Vturn;
+    } else if (cmd_d && !cmd_a) {
+        // Pure right turn (rotate in place)
+        u_l = Vturn;
+        u_r = -Vturn;
+    }
+    // If no commands or conflicting commands (W+S or A+D), motors stop (0,0)
+    
+    // Apply motor commands
+    float duty_l = constrainFloat(absFloat(u_l), min_DC, max_DC);
+    float duty_r = constrainFloat(absFloat(u_r), min_DC, max_DC);
+    
+    if (u_l == 0.0) {
+        setMotorPWM(&MotorLeft, 0.0, FORWARD);
+    } else {
+        setMotorPWM(&MotorLeft, duty_l, (u_l > 0.0) ? FORWARD : REVERSE);
+    }
+    
+    if (u_r == 0.0) {
+        setMotorPWM(&MotorRight, 0.0, FORWARD);
+    } else {
+        setMotorPWM(&MotorRight, duty_r, (u_r > 0.0) ? FORWARD : REVERSE);
+    }
+    
+    printf("WASD: %d%d%d%d -> L=%.2f R=%.2f\n", 
+           cmd_w?1:0, cmd_a?1:0, cmd_s?1:0, cmd_d?1:0, u_l, u_r);
+}
 
 // 10 Hz status streaming
 static btstack_timer_source_t stream_timer;
@@ -63,7 +146,7 @@ static void stream_cb(btstack_timer_source_t *ts){
     if (notify_enabled && connection_handle != HCI_CON_HANDLE_INVALID){
         char line[MSG_MAX];
         snprintf(line, sizeof(line), "W:%d A:%d S:%d D:%d\n", 
-                 led_w ? 1 : 0, led_a ? 1 : 0, led_s ? 1 : 0, led_d ? 1 : 0);
+                 cmd_w ? 1 : 0, cmd_a ? 1 : 0, cmd_s ? 1 : 0, cmd_d ? 1 : 0);
         queue_note(line);
     }
     restart_stream_timer();
@@ -84,36 +167,6 @@ static uint8_t adv_data[] = {
 static uint8_t scan_resp[] = {
     0x08, 0x09, 'P','i','c','o','B','L','E'
 };
-
-static void set_leds(bool w, bool a, bool s, bool d){
-    led_w = w;
-    led_a = a;
-    led_s = s;
-    led_d = d;
-    
-    gpio_put(PIN_W, w ? 1 : 0);
-    gpio_put(PIN_A, a ? 1 : 0);
-    gpio_put(PIN_S, s ? 1 : 0);
-    gpio_put(PIN_D, d ? 1 : 0);
-}
-
-static void init_gpio(void){
-    gpio_init(PIN_W);
-    gpio_set_dir(PIN_W, GPIO_OUT);
-    gpio_put(PIN_W, 0);
-    
-    gpio_init(PIN_A);
-    gpio_set_dir(PIN_A, GPIO_OUT);
-    gpio_put(PIN_A, 0);
-    
-    gpio_init(PIN_S);
-    gpio_set_dir(PIN_S, GPIO_OUT);
-    gpio_put(PIN_S, 0);
-    
-    gpio_init(PIN_D);
-    gpio_set_dir(PIN_D, GPIO_OUT);
-    gpio_put(PIN_D, 0);
-}
 
 // ATT callbacks
 static uint16_t att_read_cb(hci_con_handle_t con_handle, uint16_t att_handle, uint16_t offset,
@@ -158,11 +211,12 @@ static int att_write_cb(hci_con_handle_t con_handle, uint16_t att_handle, uint16
         // Parse WASD command format: "WASD:wxaxsxdx" where x is 0 or 1
         // Example: "WASD:1010" means W=on, A=off, S=on, D=off
         if (len >= 9 && strncmp(cmd, "WASD:", 5) == 0){
-            bool w = (cmd[5] == '1');
-            bool a = (cmd[6] == '1');
-            bool s = (cmd[7] == '1');
-            bool d = (cmd[8] == '1');
-            set_leds(w, a, s, d);
+            cmd_w = (cmd[5] == '1');
+            cmd_a = (cmd[6] == '1');
+            cmd_s = (cmd[7] == '1');
+            cmd_d = (cmd[8] == '1');
+            
+            update_motors();
             queue_note("OK\n");
         } else {
             queue_note("ERR\n");
@@ -185,7 +239,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 gap_advertisements_set_data(sizeof(adv_data), adv_data);
                 gap_scan_response_set_data(sizeof(scan_resp), scan_resp);
                 gap_advertisements_enable(1);
-                printf("Advertising WASD Controller\n");
+                printf("Advertising WASD Motor Controller\n");
             }
             break;
 
@@ -205,7 +259,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             connection_handle = HCI_CON_HANDLE_INVALID;
             notify_enabled = 0;
             pending_len = 0;
-            set_leds(false, false, false, false);
+            // Stop all motors on disconnect
+            cmd_w = cmd_a = cmd_s = cmd_d = false;
+            update_motors();
             gap_advertisements_enable(1);
             break;
 
@@ -266,17 +322,25 @@ static void build_gatt(void){
 
 int main(void){
     stdio_init_all();
-    for (int i = 0; i < 100; ++i) sleep_ms(10);
-    printf("BLE: WASD LED Controller\n");
-    printf("Pin Mapping: W=GP%d A=GP%d S=GP%d D=GP%d\n", PIN_W, PIN_A, PIN_S, PIN_D);
+    sleep_ms(2000);
+    
+    printf("BLE: WASD Motor Controller\n");
+    printf("Motor Pins: Right(GP%d,GP%d) Left(GP%d,GP%d)\n", 
+           m1_IN1, m1_IN2, m2_IN1, m2_IN2);
 
     if (cyw43_arch_init() != 0){
         printf("CYW43 init failed\n");
         return 1;
     }
     
-    init_gpio();
-    set_leds(false, false, false, false);
+    // Initialize motors
+    printf("Configuring motor PWM...\n");
+    addPins(&MotorRight, m1_IN1, m1_IN2);
+    addPins(&MotorLeft, m2_IN1, m2_IN2);
+    
+    // Ensure motors start stopped
+    setMotorPWM(&MotorRight, 0.0, FORWARD);
+    setMotorPWM(&MotorLeft, 0.0, FORWARD);
 
     l2cap_init();
     sm_init();
@@ -293,6 +357,7 @@ int main(void){
     hci_add_event_handler(&hci_event_cb);
     att_server_register_packet_handler(&packet_handler);
 
+    printf("Starting BLE...\n");
     hci_power_control(HCI_POWER_ON);
     btstack_run_loop_execute();
     return 0;
